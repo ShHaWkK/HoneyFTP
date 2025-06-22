@@ -3,10 +3,10 @@
 """
 Advanced FTP Honeypot.
 
-– Bootstrap automatique des dépendances.
-– Génération d'une paire server.key / server.crt auto-signée si manquante.
-– Autorise la connexion anonyme + un compte « attacker/secret ».
-– Utilisation de Twisted FTPShell/FTPAnonymousShell.
+– Bootstrap des dépendances manquantes (Twisted, requests, service-identity, pin crypto<39 sous 3.7)  
+– Génération auto d’un server.key/server.crt PEM non chiffré si introuvables  
+– Autorisation FTP anonyme + compte attacker/secret  
+– Shell Twisted FTPShell/FTPAnonymousShell (plus de FileSystem)  
 """
 
 import subprocess, sys, os
@@ -16,41 +16,38 @@ def ensure_installed(pkg_name, import_name=None):
     try:
         __import__(name)
     except ImportError:
-        print(f"[BOOTSTRAP] Installation de {pkg_name} …")
+        print(f"[BOOTSTRAP] installation de {pkg_name}…")
         subprocess.check_call([
             sys.executable, "-m", "pip", "install", "--upgrade", pkg_name
         ])
 
-# 1) dépendances + pin crypto pour Python 3.7
-dependencies = [
+# 1) Dépendances + pin crypto pour Python 3.7
+deps = [
     ("twisted",              None),
     ("requests",             None),
     ("service-identity",    "service_identity"),
-    ("cryptography<39",       None),  # pin si vous restez en 3.7
+    ("cryptography<39",       None),
 ]
-for pkg, imp in dependencies:
+for pkg, imp in deps:
     ensure_installed(pkg, imp)
 
-# 2) génération automatique d’un certif’ PEM s’il n’existe pas
+# 2) Génération d'une paire clé/certif auto-signée si manquante
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 import datetime
 
-KEY_FILE  = "server.key"
-CERT_FILE = "server.crt"
+KEY_FILE, CERT_FILE = "server.key", "server.crt"
 
-def generate_self_signed_cert():
-    # clé RSA 2048
+def generate_cert():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     with open(KEY_FILE, "wb") as f:
         f.write(key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=serialization.NoEncryption(),
         ))
-    # certif X.509 auto-signé « localhost »
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME,           u"US"),
         x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u"California"),
@@ -60,8 +57,7 @@ def generate_self_signed_cert():
     ])
     cert = (
         x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
+        .subject_name(subject).issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(datetime.datetime.utcnow())
@@ -76,10 +72,10 @@ def generate_self_signed_cert():
         f.write(cert.public_bytes(serialization.Encoding.PEM))
 
 if not (os.path.exists(KEY_FILE) and os.path.exists(CERT_FILE)):
-    print("[BOOTSTRAP] Génération d'un certificat auto-signé…")
-    generate_self_signed_cert()
+    print("[BOOTSTRAP] génération d'un certificat auto-signé…")
+    generate_cert()
 
-# ——— imports Twisted, etc. —————————————————————————————
+# ——— Imports Twisted & co —————————————————————————————————
 
 import logging, uuid, hashlib, random, smtplib
 from datetime import datetime
@@ -91,7 +87,7 @@ from twisted.internet import endpoints, reactor, ssl, defer
 from twisted.protocols import ftp
 from twisted.python import filepath
 
-# ——— configuration globale ————————————————————————————
+# ——— Configuration générale —————————————————————————————
 
 ROOT_DIR        = "virtual_fs"
 QUARANTINE_DIR  = "quarantine"
@@ -100,7 +96,7 @@ LOG_FILE        = "honeypot.log"
 TOR_EXIT_LIST   = "https://check.torproject.org/torbulkexitlist"
 BRUTEFORCE_THRESHOLD = 5
 DELAY_SECONDS        = 2
-CANARY_FILES     = {"passwords.txt", "secrets/ssh_key"}
+CANARY_FILES         = {"passwords.txt", "secrets/ssh_key"}
 
 SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK")
 SMTP_SERVER   = os.environ.get("SMTP_SERVER")
@@ -111,7 +107,7 @@ ALERT_FROM    = os.environ.get("ALERT_FROM")
 ALERT_TO      = os.environ.get("ALERT_TO")
 LISTEN_PORT   = int(os.environ.get("HONEYFTP_PORT","2121"))
 
-# ——— setup logging & dossiers ——————————————————————————
+# ——— Logging & dossiers ——————————————————————————————————
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,15 +117,14 @@ logging.basicConfig(
 
 os.makedirs(ROOT_DIR,       exist_ok=True)
 os.makedirs(QUARANTINE_DIR, exist_ok=True)
-os.makedirs(SESSION_LOG_DIR,exist_ok=True)
+os.makedirs(SESSION_LOG_DIR, exist_ok=True)
 
-# fichiers leurres
-lure = {
-    "passwords.txt": "admin:admin",
+# fichiers-leurres initiaux
+for path, content in {
+    "passwords.txt":   "admin:admin",
     "secrets/ssh_key": "FAKE_SSH_KEY",
-    "docs/readme.txt":  "Welcome to the FTP server",
-}
-for path, content in lure.items():
+    "docs/readme.txt": "Welcome to the FTP server",
+}.items():
     full = os.path.join(ROOT_DIR, path)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     if not os.path.exists(full):
@@ -138,12 +133,12 @@ for path, content in lure.items():
 
 failed_attempts = {}
 
-# ——— utilitaires d’alerte ——————————————————————————————
+# ——— Fonctions d’alerte ——————————————————————————————————
 
 def alert(msg: str):
     if SLACK_WEBHOOK:
         try: requests.post(SLACK_WEBHOOK, json={"text": msg}, timeout=5)
-        except Exception as e: logging.warning("Slack alert failed: %s", e)
+        except Exception as e: logging.warning("Slack failed: %s", e)
     if SMTP_SERVER and ALERT_FROM and ALERT_TO:
         try:
             with smtplib.SMTP(SMTP_SERVER, SMTP_PORT or 25, timeout=5) as s:
@@ -152,14 +147,14 @@ def alert(msg: str):
                 body = f"Subject: HoneyFTP Alert\nFrom: {ALERT_FROM}\nTo: {ALERT_TO}\n\n{msg}"
                 s.sendmail(ALERT_FROM, [ALERT_TO], body)
         except Exception as e:
-            logging.warning("SMTP alert failed: %s", e)
+            logging.warning("SMTP failed: %s", e)
 
 def is_tor_exit(ip: str) -> bool:
     try:
         r = requests.get(TOR_EXIT_LIST, timeout=5)
-        return ip.strip() in r.text.splitlines() if r.status_code==200 else False
+        return ip.strip() in r.text.splitlines() if r.status_code == 200 else False
     except Exception as e:
-        logging.warning("Tor list check failed: %s", e)
+        logging.warning("Tor check failed: %s", e)
         return False
 
 # ——— Shell FTP personnalisé ——————————————————————————————
@@ -177,36 +172,36 @@ class HoneyShell(ftp.FTPShell):
 
     def openForWriting(self, path):
         p = self._path(path)
-        if p.isdir():
-            return defer.fail(ftp.IsADirectoryError(path))
+        if p.isdir(): return defer.fail(ftp.IsADirectoryError(path))
         try:
             real = p.open("wb")
         except OSError as e:
             return ftp.errnoToFailure(e.errno, path)
 
-        session = uuid.uuid4().hex
-        qf      = open(os.path.join(QUARANTINE_DIR, session), "wb")
-        md5     = hashlib.md5(); sha = hashlib.sha256()
+        sess = uuid.uuid4().hex
+        qf   = open(os.path.join(QUARANTINE_DIR, sess), "wb")
+        md5  = hashlib.md5(); sha = hashlib.sha256()
 
         class Tee:
-            def registerProducer(self, pr, streaming): pass
-            def unregisterProducer(self): real.close(); qf.close()
+            def registerProducer(self,*a): pass
+            def unregisterProducer(self):
+                real.close(); qf.close()
             def write(self, data):
                 real.write(data); qf.write(data)
                 md5.update(data); sha.update(data)
 
         class Writer:
-            def __init__(self): self._once = False
+            def __init__(self): self._once=False
             def receive(self):
                 if self._once: raise RuntimeError("receive() déjà appelé")
-                self._once = True
+                self._once=True
                 return defer.succeed(Tee())
             def close(self):
                 real.close(); qf.close()
                 logging.info(
                     "UPLOAD ip=%s file=%s md5=%s sha256=%s session=%s",
                     self.avatarId, "/".join(path),
-                    md5.hexdigest(), sha.hexdigest(), session
+                    md5.hexdigest(), sha.hexdigest(), sess
                 )
                 if os.path.basename(path[-1]) in CANARY_FILES:
                     alert(f"Canary upload: {'/'.join(path)} by {self.avatarId}")
@@ -248,24 +243,17 @@ class HoneyFTP(ftp.FTP):
         if failed_attempts.get(ip, 0) >= BRUTEFORCE_THRESHOLD:
             d = defer.Deferred()
             reactor.callLater(
-                DELAY_SECONDS, d.callback,
-                (ftp.RESPONSE[ftp.AUTH_FAILED][0],)
+                DELAY_SECONDS, d.callback, (ftp.RESPONSE[ftp.AUTH_FAILED][0],)
             )
             return d
 
-        logging.info(
-            "PASS ip=%s user=%s pw=%s",
-            ip, getattr(self, "username", "?"), pw
-        )
+        logging.info("PASS ip=%s user=%s pw=%s", ip, getattr(self,"username","?"), pw)
         self.session_log.write(f"PASS {pw}\n")
         d = super().ftp_PASS(pw)
 
         def on_fail(err):
             failed_attempts[ip] = failed_attempts.get(ip, 0) + 1
-            logging.info(
-                "LOGIN_FAIL ip=%s count=%s",
-                ip, failed_attempts[ip]
-            )
+            logging.info("LOGIN_FAIL ip=%s count=%s", ip, failed_attempts[ip])
             self.session_log.write("LOGIN_FAIL\n")
             if failed_attempts[ip] >= BRUTEFORCE_THRESHOLD:
                 alert(f"Bruteforce detected from {ip}")
@@ -308,11 +296,11 @@ class HoneyRealm(ftp.FTPRealm):
         return HoneyShell(u)
 
 def main():
-    realm   = HoneyRealm(ROOT_DIR)
-    port    = portal.Portal(realm)
-    # autorise d'abord l'anonyme…
+    realm = HoneyRealm(ROOT_DIR)
+    port  = portal.Portal(realm)
+    # 1) autorise l’anonyme
     port.registerChecker(AllowAnonymousAccess())
-    # … puis le compte attacker/secret
+    # 2) puis le compte attacker/secret
     port.registerChecker(
         checkers.InMemoryUsernamePasswordDatabaseDontUse(attacker="secret")
     )
