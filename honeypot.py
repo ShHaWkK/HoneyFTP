@@ -9,7 +9,7 @@ Advanced FTP Honeypot.
 – Shell Twisted FTPShell/FTPAnonymousShell (plus de FileSystem)  
 """
 
-import subprocess, sys, os
+import subprocess, sys, os, shutil
 
 def ensure_installed(pkg_name, import_name=None):
     name = import_name or pkg_name
@@ -132,6 +132,7 @@ for path, content in {
             f.write(content)
 
 failed_attempts = {}
+DYNAMIC_ITEMS = []
 
 # ——— Fonctions d’alerte ——————————————————————————————————
 
@@ -156,6 +157,41 @@ def is_tor_exit(ip: str) -> bool:
     except Exception as e:
         logging.warning("Tor check failed: %s", e)
         return False
+
+# ——— Honeytoken & filesystem helpers ——————————————————————
+
+def create_honeytoken(ip: str, session: str) -> str:
+    """Create a unique honeytoken file and return its relative path."""
+    name = f"secret_{uuid.uuid4().hex}.txt"
+    path = os.path.join(ROOT_DIR, name)
+    with open(path, "w") as f:
+        f.write(f"session={session}\nip={ip}\n")
+    return name
+
+def randomize_filesystem():
+    """Add and remove random files/directories in the virtual FS."""
+    # Remove old dynamic items
+    for p in list(DYNAMIC_ITEMS):
+        try:
+            if os.path.isdir(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+        except FileNotFoundError:
+            pass
+        finally:
+            DYNAMIC_ITEMS.remove(p)
+
+    # Create new random structure
+    for _ in range(random.randint(1, 3)):
+        d = os.path.join(ROOT_DIR, f"dir_{uuid.uuid4().hex[:6]}")
+        os.makedirs(d, exist_ok=True)
+        DYNAMIC_ITEMS.append(d)
+        for _ in range(random.randint(1, 2)):
+            fname = os.path.join(d, f"file_{uuid.uuid4().hex[:6]}.txt")
+            with open(fname, "w") as f:
+                f.write("dummy data\n")
+            DYNAMIC_ITEMS.append(fname)
 
 # ——— Shell FTP personnalisé ——————————————————————————————
 
@@ -224,10 +260,16 @@ class HoneyFTP(ftp.FTP):
         if is_tor_exit(ip):
             logging.info("TOR_EXIT ip=%s", ip)
             alert(f"Tor exit node: {ip}")
+        # create a unique honeytoken for this session
+        self.honeytoken = create_honeytoken(ip, self.session_id)
 
     def connectionLost(self, reason):
         ip = getattr(self.transport.getPeer(), "host", "?")
         logging.info("DISCONNECT ip=%s session=%s", ip, self.session_id)
+        try:
+            os.remove(os.path.join(ROOT_DIR, getattr(self, "honeytoken", "")))
+        except OSError:
+            pass
         self.session_log.close()
         super().connectionLost(reason)
 
@@ -263,6 +305,7 @@ class HoneyFTP(ftp.FTP):
             failed_attempts.pop(ip, None)
             logging.info("LOGIN_SUCCESS ip=%s", ip)
             self.session_log.write("LOGIN_SUCCESS\n")
+            randomize_filesystem()
             return res
 
         d.addCallbacks(on_succ, on_fail)
@@ -272,8 +315,27 @@ class HoneyFTP(ftp.FTP):
         rel = path.lstrip("/")
         if rel in CANARY_FILES:
             alert(f"Canary download: {rel} by {self.transport.getPeer().host}")
+        if rel == getattr(self, "honeytoken", None):
+            logging.info(
+                "HONEYTOKEN_DOWNLOAD ip=%s file=%s session=%s",
+                self.transport.getPeer().host,
+                rel,
+                self.session_id,
+            )
         self.session_log.write(f"RETR {rel}\n")
         return super().ftp_RETR(path)
+
+    def ftp_SITE(self, params):
+        parts = params.strip().split()
+        cmd = parts[0].upper() if parts else ""
+        if cmd == "EXEC":
+            return (ftp.CMD_OK, "EXEC disabled")
+        elif cmd == "CHMOD":
+            return (ftp.CMD_OK, "CHMOD ignored")
+        elif cmd == "SHELL":
+            return (ftp.CMD_OK, "SHELL unavailable")
+        else:
+            return (ftp.SYNTAX_ERR, params)
 
     def lineReceived(self, line):
         ip  = self.transport.getPeer().host
@@ -288,6 +350,7 @@ class HoneyFTP(ftp.FTP):
 
 class HoneyFTPFactory(ftp.FTPFactory):
     protocol = HoneyFTP
+    welcomeMessage = "(vsFTPd 2.3.4)"
 
 class HoneyRealm(ftp.FTPRealm):
     def avatarForAnonymousUser(self):
