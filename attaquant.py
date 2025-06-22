@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script de test FTPS/TLS implicite vers le honeypot.
+Script de test FTPS implicite (TLS dès connect) vers le honeypot.
 """
 
 import ssl
 from ftplib import FTP_TLS
 
-HOST = "IP"  
+HOST = "192.168.100.51"  # ← remplacez par l'IP de votre honeypot
 PORT = 2121
 
-def test_login(user, passwd):
+def test_login(user, pw):
     try:
-        # Contexte qui ignore le certificat auto-signé
+        # Contexte TLS qui ignore le certif auto-signé
         ctx = ssl._create_unverified_context()
-        ftps = FTP_TLS(context=ctx)
-        ftps.connect(HOST, PORT)
-        ftps.auth()               # passe en mode TLS explicite si nécessaire
-        ftps.login(user, passwd)
-        ftps.prot_p()             # sécurise le canal de données
-        print(f"[+] Connexion réussie en tant que : {user!r}")
+        ftps = FTP_TLS(context=ctx)        # implicit FTPS
+        ftps.connect(HOST, PORT)          # handshake TLS immédiat
+        ftps.login(user, pw)              # USER/PASS
+        ftps.prot_p()                     # sécurise le canal de données
+        print(f"[+] Connexion réussie: {user!r}")
         files = ftps.nlst()
         print("    Contenu :", files)
         if "passwords.txt" in files:
@@ -29,11 +28,12 @@ def test_login(user, passwd):
             print(f"[+] Téléchargé passwords.txt → {local}")
         ftps.quit()
     except Exception as e:
-        print(f"[-] Échec {user!r} : {e}")
+        print(f"[-] Échec connexion {user!r} : {e}")
 
 def main():
-    for user, pw in [("anonymous", ""), ("attacker", "secret")]:
-        test_login(user, pw)
+    # on teste anonymement puis attacker/secret
+    test_login("anonymous", "")
+    test_login("attacker", "secret")
 
 if __name__ == "__main__":
     main()
