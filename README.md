@@ -9,8 +9,8 @@ Slack or SMTP. Each connection has its own session log for forensic analysis.
 
 ## Requirements
 
-- Python 3
-- `twisted`, `requests`, `pyOpenSSL`
+- Python 3.8 or newer
+- `twisted`, `requests`, `pyOpenSSL`, `service_identity`
 
 ## Setup
 
@@ -21,7 +21,7 @@ openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365 
 # (Optional) create a virtual environment
 python3 -m venv honeypot-env
 source honeypot-env/bin/activate
-pip install twisted requests pyOpenSSL
+pip install twisted requests pyOpenSSL service_identity
 
 # Run the honeypot
 nohup python honeypot.py &
@@ -34,7 +34,7 @@ enable alerts or change the port.
 ## Deployment on Proxmox
 
 1. Créez un conteneur ou une VM Debian/Ubuntu sur votre hôte Proxmox.
-2. Installez Python 3 et git :
+2. Installez Python 3.8+ et git :
 
    ```bash
    apt update && apt install -y python3 python3-venv git
