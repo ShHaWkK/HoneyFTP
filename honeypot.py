@@ -18,7 +18,7 @@ import random
 
 import requests
 from twisted.cred import portal, checkers
-from twisted.internet import endpoints, reactor, ssl
+from twisted.internet import endpoints, reactor, ssl, defer
 from twisted.protocols import ftp
 from twisted.python import filepath
 
@@ -102,38 +102,81 @@ def is_tor_exit(ip: str) -> bool:
     return False
 
 
-class HoneyShell(ftp.FileSystem):
+class HoneyShell(ftp.FTPShell):
     """Filesystem avatar used by the honeypot."""
 
     def __init__(self, avatar_id: str):
-        super().__init__(avatar_id, ROOT_DIR)
+        super().__init__(filepath.FilePath(ROOT_DIR))
+        self.avatarId = avatar_id
 
     def openForReading(self, path):
-        rel = os.path.relpath(path.path, ROOT_DIR)
+        rel = "/".join(path)
         if rel in CANARY_FILES:
             alert(f"Canary file accessed: {rel} by {self.avatarId}")
         return super().openForReading(path)
 
-    def storeFile(self, path, consumer, *args, **kwargs):
-        data = consumer.read()
+    def openForWriting(self, path):
+        p = self._path(path)
+        if p.isdir():
+            return defer.fail(ftp.IsADirectoryError(path))
+        try:
+            real_f = p.open("wb")
+        except OSError as e:
+            return ftp.errnoToFailure(e.errno, path)
         session = uuid.uuid4().hex
-        quarantine_path = os.path.join(QUARANTINE_DIR, session)
-        with open(quarantine_path, "wb") as out:
-            out.write(data)
-        md5 = hashlib.md5(data).hexdigest()
-        sha256 = hashlib.sha256(data).hexdigest()
-        logging.info(
-            "UPLOAD ip=%s file=%s md5=%s sha256=%s session=%s",
-            self.avatarId,
-            path,
-            md5,
-            sha256,
-            session,
-        )
-        if os.path.basename(path) in CANARY_FILES:
-            alert(f"Canary upload {path} by {self.avatarId}")
-        consumer = open(quarantine_path, "rb")
-        return super().storeFile(path, consumer, *args, **kwargs)
+        quarantine = os.path.join(QUARANTINE_DIR, session)
+        qf = open(quarantine, "wb")
+
+        md5_hash = hashlib.md5()
+        sha_hash = hashlib.sha256()
+
+        class _TeeConsumer:
+            def registerProducer(self, producer, streaming):
+                self.producer = producer
+                assert streaming
+
+            def unregisterProducer(self):
+                self.producer = None
+                real_f.close()
+                qf.close()
+
+            def write(self, data):
+                real_f.write(data)
+                qf.write(data)
+                md5_hash.update(data)
+                sha_hash.update(data)
+
+        outer_self = self
+
+        class _HoneyWriter:
+            def __init__(self):
+                self._received = False
+
+            def receive(self):
+                if self._received:
+                    raise RuntimeError("receive() already called")
+                self._received = True
+                return defer.succeed(_TeeConsumer())
+
+            def close(self):
+                real_f.close()
+                qf.close()
+                md5 = md5_hash.hexdigest()
+                sha = sha_hash.hexdigest()
+                logging.info(
+                    "UPLOAD ip=%s file=%s md5=%s sha256=%s session=%s",
+                    outer_self.avatarId,
+                    "/".join(path),
+                    md5,
+                    sha,
+                    session,
+                )
+                if os.path.basename("/".join(path)) in CANARY_FILES:
+                    alert(f"Canary upload {'/'.join(path)} by {outer_self.avatarId}")
+                return defer.succeed(None)
+
+        writer = _HoneyWriter()
+        return defer.succeed(writer)
 
 
 class HoneyFTP(ftp.FTP):
