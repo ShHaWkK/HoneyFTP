@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Attacker Implicit-FTPS — script complet et corrigé
+Attacker Implicit-FTPS Interactive Menu
 
-Fonctionnalités :
- - TLS implicite dès la connexion TCP
- - Test des comptes anonymous/"" et attacker/secret
- - NLST "." pour lister le répertoire racine
- - Téléchargement automatique de passwords.txt et secrets/ssh_key
- - Upload optionnel d’un fichier (--upload)
- - argparse flexible (host, port, users, pwds, download, upload)
- - Logging console + fichier (~/attacker.log même sous sudo)
- - Couleurs (colorama)
- - Mesure des durées et résumé en fin de run
+Usage: python3 attacker_menu.py [--host HOST] [--port PORT]
+
+Menu:
+ 1) Connexion anonymous/""
+ 2) Connexion attacker/secret
+ 3) Connexion custom (user+pwd)
+ 4) Lister fichiers (NLST)
+ 5) Télécharger un fichier
+ 6) Uploader un fichier
+ 7) Déconnexion et quitter
 """
 
 import os
@@ -20,144 +20,138 @@ import sys
 import ssl
 import socket
 import argparse
-import logging
-import time
-import subprocess
 from ftplib import FTP, error_perm
 
-# ─── Colorama (auto-install) ───────────────────────────────────────────────
-try:
-    from colorama import init, Fore, Style
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "colorama"])
-    from colorama import init, Fore, Style
-init(autoreset=True)
+def make_ftps(host, port):
+    """Crée et renvoie une instance ftplib.FTP sur TLS implicite."""
+    raw = socket.create_connection((host, port), timeout=10)
+    ctx = ssl._create_unverified_context()
+    ss  = ctx.wrap_socket(raw, server_hostname=host)
+    ftp = FTP()
+    ftp.sock = ss
+    ftp.file = ss.makefile('r', encoding='utf-8', newline='\r\n')
+    ftp.af = ss.family
+    ftp.passiveserver = True
+    banner = ftp.getresp().strip()
+    print("← Bannière :", banner)
+    return ftp
 
-# ─── argparse ───────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(description="Attacker Implicit-FTPS")
-parser.add_argument("-H","--host",    default="192.168.100.51",
-                    help="IP ou hostname du honeypot")
-parser.add_argument("-P","--port",    default=2121, type=int,
-                    help="Port FTPS implicite")
-parser.add_argument("-U","--users",   nargs="+",
-                    default=["anonymous","attacker"],
-                    help="Utilisateurs à tester")
-parser.add_argument("-W","--pwds",    nargs="+",
-                    default=["","secret"],
-                    help="Mots de passe correspondants")
-parser.add_argument("-d","--download",
-                    default="~/ftp_downloads",
-                    help="Répertoire local pour les téléchargements")
-parser.add_argument("-u","--upload",
-                    help="Chemin local d’un fichier à uploader")
-args = parser.parse_args()
-
-# ─── Détection du vrai HOME (même sous sudo) ────────────────────────────────
-sudo_user = os.environ.get("SUDO_USER")
-HOME      = os.path.expanduser(f"~{sudo_user}") if sudo_user else os.path.expanduser("~")
-
-# ─── Préparation du dossier de téléchargement ────────────────────────────────
-DOWNLOAD_DIR = os.path.expanduser(args.download.replace("~", HOME))
-try:
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-except PermissionError:
-    DOWNLOAD_DIR = "/tmp/ftp_downloads"
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    print(Fore.YELLOW + "[WARN] Permission denied, fallback download → /tmp/ftp_downloads")
-
-# ─── Logging console + fichier ──────────────────────────────────────────────
-logger = logging.getLogger("attacker")
-logger.setLevel(logging.INFO)
-fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-
-ch = logging.StreamHandler(sys.stdout)
-ch.setFormatter(fmt)
-logger.addHandler(ch)
-
-LOG_PATH = os.path.join(HOME, "attacker.log")
-try:
-    fh = logging.FileHandler(LOG_PATH)
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
-    logger.info(f"Logging to {LOG_PATH}")
-except PermissionError:
-    logger.warning("Cannot write to file log, skipping file log")
-
-# ─── Canary files à récupérer ────────────────────────────────────────────────
-CANARY_FILES = ["passwords.txt", "secrets/ssh_key"]
-
-def try_login(user: str, pwd: str):
-    t0 = time.time()
-    logger.info(Fore.CYAN + f"Testing {user!r}/{pwd!r} on {args.host}:{args.port}")
+def do_login(ftp, user, pwd):
+    """Effectue USER/PASS."""
     try:
-        # 1) Connexion TCP
-        raw = socket.create_connection((args.host, args.port), timeout=10)
-
-        # 2) TLS implicite
-        ctx  = ssl._create_unverified_context()
-        ss   = ctx.wrap_socket(raw, server_hostname=args.host)
-
-        # 3) Greffe ftplib.FTP sur la socket TLS
-        ftp = FTP()
-        ftp.sock = ss
-        ftp.file = ss.makefile('r', encoding='utf-8', newline='\r\n')
-        ftp.af, ftp.passiveserver = ss.family, True
-
-        # 4) Bannière
-        banner = ftp.getresp().strip()
-        logger.info(Fore.YELLOW + banner)
-
-        # 5) LOGIN
         resp = ftp.login(user, pwd)
-        logger.info(Fore.GREEN + f"LOGIN OK: {resp}")
+        print("← LOGIN OK :", resp)
+        return True
+    except error_perm as e:
+        print("× AUTH FAILED :", e)
+        return False
 
-        # 6) NLST "."
+def do_nlst(ftp):
+    """Liste le répertoire courant."""
+    try:
         files = ftp.nlst(".")
         files = [f.lstrip("./") for f in files]
-        logger.info(Fore.MAGENTA + f"FILES: {files}")
-
-        # 7) Télécharger les canaries
-        for cf in CANARY_FILES:
-            if cf in files:
-                out = os.path.join(DOWNLOAD_DIR, f"{user}_{cf.replace('/','_')}")
-                logger.info(Fore.BLUE + f"↓ DL {cf} → {out}")
-                with open(out, "wb") as fd:
-                    ftp.retrbinary(f"RETR {cf}", fd.write)
-                logger.info(Fore.GREEN + "   ✓ Download succeeded")
-
-        # 8) Upload optionnel
-        if args.upload:
-            base = os.path.basename(args.upload)
-            logger.info(Fore.BLUE + f"↑ UPLOAD {args.upload} → /{base}")
-            with open(os.path.expanduser(args.upload), "rb") as rd:
-                ftp.storbinary(f"STOR {base}", rd)
-            logger.info(Fore.GREEN + "   ✓ Upload succeeded")
-
-        ftp.quit()
-        return True, time.time() - t0
-
-    except error_perm as e:
-        logger.warning(Fore.RED + f"Permission error for {user}: {e}")
+        print("← FILES:", files)
     except Exception as e:
-        logger.error(Fore.RED + f"Error for {user}: {e}", exc_info=True)
+        print("× NLST failed:", e)
 
-    return False, time.time() - t0
+def do_retr(ftp):
+    """Demande à l’utilisateur un nom de fichier et le télécharge."""
+    fn = input("Nom du fichier à télécharger > ").strip()
+    if not fn:
+        print("Abandon.")
+        return
+    out = input("Chemin local de destination > ").strip() or fn
+    try:
+        with open(os.path.expanduser(out), "wb") as f:
+            ftp.retrbinary(f"RETR {fn}", f.write)
+        print(f"✓ {fn} → {out}")
+    except Exception as e:
+        print("× RETR failed:", e)
+
+def do_stor(ftp):
+    """Demande un chemin local et l’upload."""
+    local = input("Chemin local du fichier à uploader > ").strip()
+    if not local or not os.path.isfile(os.path.expanduser(local)):
+        print("Fichier invalide, abandon.")
+        return
+    remote = input("Nom distant (STOR) > ").strip() or os.path.basename(local)
+    try:
+        with open(os.path.expanduser(local), "rb") as f:
+            ftp.storbinary(f"STOR {remote}", f)
+        print(f"✓ Uploaded {local} → /{remote}")
+    except Exception as e:
+        print("× STOR failed:", e)
 
 def main():
-    logger.info("[*] START Attacker")
-    results = []
-    for idx, user in enumerate(args.users):
-        pwd = args.pwds[idx] if idx < len(args.pwds) else ""
-        ok, dur = try_login(user, pwd)
-        results.append((user, ok, dur))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="192.168.100.51",
+                        help="IP ou hostname du honeypot")
+    parser.add_argument("--port", default=2121, type=int,
+                        help="Port FTPS implicite")
+    args = parser.parse_args()
 
-    logger.info("[*] SUMMARY")
-    for user, ok, dur in results:
-        status = Fore.GREEN + "OK" if ok else Fore.RED + "KO"
-        logger.info(f" - {user:10s}: {status} in {dur:.2f}s")
+    ftp = None
+    connected_user = None
 
-    logger.info(f"Downloads stored in {DOWNLOAD_DIR}")
-    logger.info("[*] END Attacker")
+    while True:
+        print("""
+===== MENU FTPS ATTACKER =====
+1) Connexion anonymous / ""
+2) Connexion attacker / secret
+3) Connexion custom
+4) Lister fichiers (NLST)
+5) Télécharger un fichier
+6) Uploader un fichier
+7) Déconnexion et quitter
+""")
+        choice = input("Votre choix > ").strip()
+        if choice == "1":
+            if ftp: ftp.close()
+            ftp = make_ftps(args.host, args.port)
+            if do_login(ftp, "anonymous", ""):
+                connected_user = "anonymous"
+            else:
+                ftp.close(); ftp = None
+        elif choice == "2":
+            if ftp: ftp.close()
+            ftp = make_ftps(args.host, args.port)
+            if do_login(ftp, "attacker", "secret"):
+                connected_user = "attacker"
+            else:
+                ftp.close(); ftp = None
+        elif choice == "3":
+            u = input("User > ").strip()
+            p = input("Password > ").strip()
+            if ftp: ftp.close()
+            ftp = make_ftps(args.host, args.port)
+            if do_login(ftp, u, p):
+                connected_user = u
+            else:
+                ftp.close(); ftp = None
+        elif choice == "4":
+            if not ftp:
+                print("► Veuillez vous connecter d'abord.")
+            else:
+                do_nlst(ftp)
+        elif choice == "5":
+            if not ftp:
+                print("► Veuillez vous connecter d'abord.")
+            else:
+                do_retr(ftp)
+        elif choice == "6":
+            if not ftp:
+                print("► Veuillez vous connecter d'abord.")
+            else:
+                do_stor(ftp)
+        elif choice == "7":
+            if ftp:
+                try: ftp.quit()
+                except: pass
+            print("Bye.")
+            break
+        else:
+            print("Choix invalide, réessayez.")
 
 if __name__ == "__main__":
     main()
