@@ -5,7 +5,7 @@ High-Interaction FTP Honeypot
 
 Features:
 – Auto-bootstrap pip deps (Twisted, requests, service-identity, pin cryptography<39 on Py3.7)
-– Auto-generate self-signed TLS cert (server.key/server.crt) inside a writable ROOT_DIR
+– Auto-generate self-signed TLS cert inside a writable ROOT_DIR
 – Implicit FTPS (SSL4ServerEndpoint)
 – Anonymous + attacker/secret login
 – Canary files + per-session honeytoken
@@ -14,6 +14,9 @@ Features:
 – Brute-force throttling + tarpitting
 – Tor exit-node detection
 – Fake SITE commands (EXEC/CHMOD/SHELL)
+– RNFR/RNTO rename logging + .rename.log trace
+– DELE → move to quarantine + detailed log
+– MKD/RMD → allow, but alert on forbidden Dir removals
 – Central + per-session logging
 """
 
@@ -47,7 +50,7 @@ for pkg, imp in [
 ]:
     ensure_installed(pkg, imp)
 
-# ——— 2) Determine writable base directory —————————————————————————
+# ——— 2) Determine writable base directory ————————————————————————
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if os.access(script_dir, os.W_OK):
     BASE_DIR = script_dir
@@ -61,26 +64,27 @@ QUARANTINE_DIR = os.path.join(BASE_DIR, "quarantine")
 SESSION_DIR    = os.path.join(BASE_DIR, "sessions")
 LOG_FILE       = os.path.join(BASE_DIR, "honeypot.log")
 
-TOR_EXIT_URL = "https://check.torproject.org/torbulkexitlist"
-BRUTEF_THR   = 5
-DELAY_SEC    = 2
-CANARY_FILES = {"passwords.txt", "secrets/ssh_key"}
-LISTEN_PORT  = int(os.getenv("HONEYFTP_PORT", "2121"))
+TOR_EXIT_URL   = "https://check.torproject.org/torbulkexitlist"
+BRUTEF_THR     = 5
+DELAY_SEC      = 2
+CANARY_FILES   = {"passwords.txt", "secrets/ssh_key"}
+FORBIDDEN_DIRS = {"secrets"}  # any RMD on these triggers alert
+LISTEN_PORT    = int(os.getenv("HONEYFTP_PORT", "2121"))
 
 SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK")
-SMTP_CFG = (
+SMTP_CFG      = (
     os.getenv("SMTP_SERVER"),
-    int(os.getenv("SMTP_PORT", "0")) or 25,
+    int(os.getenv("SMTP_PORT","0")) or 25,
     os.getenv("SMTP_USER"),
     os.getenv("SMTP_PASS"),
     os.getenv("ALERT_FROM"),
     os.getenv("ALERT_TO"),
 )
 
-# ——— 3) Create directories & configure logging ————————————————————
-os.makedirs(ROOT_DIR, exist_ok=True)
+# ——— 3) Create directories & configure logging —————————————————————
+os.makedirs(ROOT_DIR,       exist_ok=True)
 os.makedirs(QUARANTINE_DIR, exist_ok=True)
-os.makedirs(SESSION_DIR, exist_ok=True)
+os.makedirs(SESSION_DIR,    exist_ok=True)
 
 handlers = [logging.StreamHandler()]
 try:
@@ -109,7 +113,7 @@ for path, content in {
 failed_attempts = {}
 dynamic_items   = []
 
-# ——— 4) Auto-generate TLS certificate in ROOT_DIR ——————————————————
+# ——— 4) Auto-generate TLS certificate in ROOT_DIR —————————————————
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
@@ -125,7 +129,7 @@ if not (os.path.exists(KEY_FILE) and os.path.exists(CRT_FILE)):
         f.write(key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption(),
+            serialization.NoEncryption()
         ))
     subj = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME,           u"US"),
@@ -134,20 +138,15 @@ if not (os.path.exists(KEY_FILE) and os.path.exists(CRT_FILE)):
         x509.NameAttribute(NameOID.ORGANIZATION_NAME,      u"Honeypot"),
         x509.NameAttribute(NameOID.COMMON_NAME,            u"localhost"),
     ])
-    cert = (
-        x509.CertificateBuilder()
+    cert = (x509.CertificateBuilder()
         .subject_name(subj)
         .issuer_name(subj)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(datetime.utcnow())
         .not_valid_after(datetime.utcnow() + timedelta(days=365))
-        .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(u"localhost")]),
-            critical=False
-        )
-        .sign(key, hashes.SHA256())
-    )
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(u"localhost")]), critical=False)
+        .sign(key, hashes.SHA256()))
     with open(CRT_FILE, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
 
@@ -163,7 +162,7 @@ def alert(msg: str):
     if SLACK_WEBHOOK:
         try: requests.post(SLACK_WEBHOOK, json={"text": msg}, timeout=5)
         except: pass
-    srv,port,user,pw,fr,to = SMTP_CFG
+    srv, port, user, pw, fr, to = SMTP_CFG
     if srv and fr and to:
         try:
             s = smtplib.SMTP(srv, port, timeout=5)
@@ -176,8 +175,8 @@ def alert(msg: str):
 
 def is_tor_exit(ip: str) -> bool:
     try:
-        resp = requests.get(TOR_EXIT_URL, timeout=5)
-        return ip in resp.text.splitlines()
+        r = requests.get(TOR_EXIT_URL, timeout=5)
+        return ip in r.text.splitlines()
     except:
         return False
 
@@ -192,17 +191,14 @@ def randomize_fs():
     for p in list(dynamic_items):
         try:
             shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
-        except:
-            pass
+        except: pass
         dynamic_items.remove(p)
-    for _ in range(random.randint(1, 3)):
+    for _ in range(random.randint(1,3)):
         d = os.path.join(ROOT_DIR, f"dir_{uuid.uuid4().hex[:6]}")
-        os.makedirs(d, exist_ok=True)
-        dynamic_items.append(d)
-        for __ in range(random.randint(1, 2)):
+        os.makedirs(d, exist_ok=True); dynamic_items.append(d)
+        for __ in range(random.randint(1,2)):
             fpath = os.path.join(d, f"file_{uuid.uuid4().hex[:6]}.txt")
-            with open(fpath, "w") as x:
-                x.write("dummy data\n")
+            with open(fpath, "w") as x: x.write("dummy data\n")
             dynamic_items.append(fpath)
 
 # ——— 7) Custom FTPShell —————————————————————————————————————
@@ -220,7 +216,7 @@ class HoneyShell(ftp.FTPShell):
     def openForWriting(self, path):
         return super().openForWriting(path)
 
-# ——— 8) FTP Protocol with detection —————————————————————————
+# ——— 8) FTP Protocol with detection + file commands —————————————————
 class HoneyFTP(ftp.FTP):
     def connectionMade(self):
         super().connectionMade()
@@ -236,10 +232,8 @@ class HoneyFTP(ftp.FTP):
     def connectionLost(self, reason):
         peer = getattr(self.transport.getPeer(), "host", "?")
         logging.info("DISCONNECT ip=%s session=%s", peer, self.session)
-        try:
-            os.remove(os.path.join(ROOT_DIR, self.token))
-        except:
-            pass
+        try: os.remove(os.path.join(ROOT_DIR, self.token))
+        except: pass
         self.logf.close()
         super().connectionLost(reason)
 
@@ -252,27 +246,95 @@ class HoneyFTP(ftp.FTP):
 
     def ftp_PASS(self, pw):
         peer = self.transport.getPeer().host
-        if failed_attempts.get(peer, 0) >= BRUTEF_THR:
+        if failed_attempts.get(peer,0) >= BRUTEF_THR:
             d = defer.Deferred()
             reactor.callLater(DELAY_SEC, d.callback, (ftp.RESPONSE[ftp.AUTH_FAILED][0],))
             return d
-        logging.info("PASS ip=%s usr=%s pw=%s", peer, getattr(self, "username", "?"), pw)
+        logging.info("PASS ip=%s usr=%s pw=%s", peer, getattr(self,"username","?"), pw)
         self.logf.write(f"PASS {pw}\n")
         d = super().ftp_PASS(pw)
-
         def onFail(err):
-            failed_attempts[peer] = failed_attempts.get(peer, 0) + 1
+            failed_attempts[peer] = failed_attempts.get(peer,0) + 1
             if failed_attempts[peer] >= BRUTEF_THR:
                 alert(f"Bruteforce detected from {peer}")
             return err
-
         def onSucc(res):
             failed_attempts.pop(peer, None)
             randomize_fs()
             return res
-
         d.addCallbacks(onSucc, onFail)
         return d
+
+    # — RNFR / RNTO rename commands —
+    def ftp_RNFR(self, filename):
+        peer = self.transport.getPeer().host
+        self._pending_rename = filename.lstrip("/")
+        logging.info("RNFR ip=%s file=%s", peer, self._pending_rename)
+        # trace in per-session rename log
+        with open(os.path.join(SESSION_DIR, f"{self.session}.rename.log"), "a") as rl:
+            rl.write(f"RNFR {self._pending_rename}\n")
+        return (ftp.CMD_OK, "Ready for RNTO")
+
+    def ftp_RNTO(self, newname):
+        peer = self.transport.getPeer().host
+        old = getattr(self, "_pending_rename", None)
+        new = newname.lstrip("/")
+        if not old:
+            return (ftp.SYNTAX_ERR, "RNFR required before RNTO")
+        old_path = os.path.join(ROOT_DIR, old)
+        new_path = os.path.join(ROOT_DIR, new)
+        try:
+            os.makedirs(os.path.dirname(new_path), exist_ok=True)
+            os.rename(old_path, new_path)
+            logging.info("RNTO ip=%s %s → %s", peer, old, new)
+            with open(os.path.join(SESSION_DIR, f"{self.session}.rename.log"), "a") as rl:
+                rl.write(f"RNTO {old} → {new}\n")
+            return (ftp.CMD_OK, "Rename successful")
+        except Exception as e:
+            return (ftp.FILE_UNAVAILABLE, f"Rename failed: {e}")
+
+    # — DELE command: quarantine instead of delete —
+    def ftp_DELE(self, path):
+        peer = self.transport.getPeer().host
+        rel = path.lstrip("/")
+        src = os.path.join(ROOT_DIR, rel)
+        qname = f"{self.session}_{uuid.uuid4().hex}"
+        dst = os.path.join(QUARANTINE_DIR, qname)
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.replace(src, dst)
+            logging.info("DELE ip=%s file=%s → quarantined as %s", peer, rel, qname)
+            self.logf.write(f"DELE {rel} => quarantine/{qname}\n")
+            return (ftp.CMD_OK, "File deleted")
+        except Exception as e:
+            return (ftp.FILE_UNAVAILABLE, f"Deletion failed: {e}")
+
+    # — MKD / RMD directory commands —
+    def ftp_MKD(self, path):
+        peer = self.transport.getPeer().host
+        rel = path.lstrip("/")
+        full = os.path.join(ROOT_DIR, rel)
+        try:
+            os.makedirs(full, exist_ok=True)
+            logging.info("MKD ip=%s dir=%s", peer, rel)
+            self.logf.write(f"MKD {rel}\n")
+            return (ftp.CMD_OK, f"Directory {rel} created")
+        except Exception as e:
+            return (ftp.FILE_UNAVAILABLE, f"MKD failed: {e}")
+
+    def ftp_RMD(self, path):
+        peer = self.transport.getPeer().host
+        rel = path.lstrip("/")
+        full = os.path.join(ROOT_DIR, rel)
+        logging.info("RMD ip=%s dir=%s", peer, rel)
+        self.logf.write(f"RMD {rel}\n")
+        if rel in FORBIDDEN_DIRS:
+            alert(f"Protected directory removal attempt: {rel} by {peer}")
+        try:
+            shutil.rmtree(full)
+            return (ftp.CMD_OK, f"Directory {rel} removed")
+        except Exception as e:
+            return (ftp.FILE_UNAVAILABLE, f"RMD failed: {e}")
 
     def ftp_RETR(self, path):
         rel = path.lstrip("/")
@@ -300,7 +362,7 @@ class HoneyFTP(ftp.FTP):
         self.count += 1
         if self.count > 20 and (datetime.utcnow() - self.start).total_seconds() < 10:
             alert(f"Fast scanner detected from {peer}")
-            reactor.callLater(random.uniform(1, 3), lambda: None)
+            reactor.callLater(random.uniform(1,3), lambda: None)
         return super().lineReceived(line)
 
 class HoneypotFactory(ftp.FTPFactory):
@@ -309,9 +371,6 @@ class HoneypotFactory(ftp.FTPFactory):
 
 # ——— 9) Corrected Realm using requestAvatar —————————————————————
 class HoneyRealm:
-    """
-    Always return our HoneyShell for ANY username (anonymous or attacker).
-    """
     def requestAvatar(self, avatarId, mind, *interfaces):
         if ftp.IFTPShell in interfaces:
             shell = HoneyShell(avatarId)
@@ -320,7 +379,7 @@ class HoneyRealm:
 
 def main():
     p = portal.Portal(HoneyRealm())
-    # register attacker account first
+    # register attacker/secret first
     p.registerChecker(checkers.InMemoryUsernamePasswordDatabaseDontUse(attacker="secret"))
     # then allow anonymous
     p.registerChecker(AllowAnonymousAccess())
