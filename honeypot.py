@@ -31,7 +31,7 @@ import tempfile
 from datetime import datetime, timedelta
 import requests
 
-# ——— 1) Bootstrap pip dependencies —————————————————————————————————
+# ——— 1) Bootstrap pip dependencies —————————————————————————————
 def ensure_installed(pkg, imp=None):
     try:
         __import__(imp or pkg)
@@ -47,7 +47,7 @@ for pkg, imp in [
 ]:
     ensure_installed(pkg, imp)
 
-# ——— 2) Determine writable base directory ——————————————————————————
+# ——— 2) Determine writable base directory —————————————————————————
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if os.access(script_dir, os.W_OK):
     BASE_DIR = script_dir
@@ -61,26 +61,26 @@ QUARANTINE_DIR = os.path.join(BASE_DIR, "quarantine")
 SESSION_DIR    = os.path.join(BASE_DIR, "sessions")
 LOG_FILE       = os.path.join(BASE_DIR, "honeypot.log")
 
-TOR_EXIT_URL   = "https://check.torproject.org/torbulkexitlist"
-BRUTEF_THR     = 5
-DELAY_SEC      = 2
-CANARY_FILES   = {"passwords.txt", "secrets/ssh_key"}
-LISTEN_PORT    = int(os.getenv("HONEYFTP_PORT", "2121"))
+TOR_EXIT_URL = "https://check.torproject.org/torbulkexitlist"
+BRUTEF_THR   = 5
+DELAY_SEC    = 2
+CANARY_FILES = {"passwords.txt", "secrets/ssh_key"}
+LISTEN_PORT  = int(os.getenv("HONEYFTP_PORT", "2121"))
 
-SLACK_WEBHOOK  = os.getenv("SLACK_WEBHOOK")
-SMTP_CFG       = (
+SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK")
+SMTP_CFG = (
     os.getenv("SMTP_SERVER"),
-    int(os.getenv("SMTP_PORT","0")) or 25,
+    int(os.getenv("SMTP_PORT", "0")) or 25,
     os.getenv("SMTP_USER"),
     os.getenv("SMTP_PASS"),
     os.getenv("ALERT_FROM"),
     os.getenv("ALERT_TO"),
 )
 
-# ——— 3) Create directories & configure logging ——————————————————————
-os.makedirs(ROOT_DIR,       exist_ok=True)
+# ——— 3) Create directories & configure logging ————————————————————
+os.makedirs(ROOT_DIR, exist_ok=True)
 os.makedirs(QUARANTINE_DIR, exist_ok=True)
-os.makedirs(SESSION_DIR,    exist_ok=True)
+os.makedirs(SESSION_DIR, exist_ok=True)
 
 handlers = [logging.StreamHandler()]
 try:
@@ -109,7 +109,7 @@ for path, content in {
 failed_attempts = {}
 dynamic_items   = []
 
-# ——— 4) Auto-generate TLS certificate in ROOT_DIR ————————————————————
+# ——— 4) Auto-generate TLS certificate in ROOT_DIR ——————————————————
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
@@ -192,15 +192,18 @@ def randomize_fs():
     for p in list(dynamic_items):
         try:
             shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
-        except: pass
+        except:
+            pass
         dynamic_items.remove(p)
-    for _ in range(random.randint(1,3)):
+    for _ in range(random.randint(1, 3)):
         d = os.path.join(ROOT_DIR, f"dir_{uuid.uuid4().hex[:6]}")
-        os.makedirs(d, exist_ok=True); dynamic_items.append(d)
-        for __ in range(random.randint(1,2)):
-            f = os.path.join(d, f"file_{uuid.uuid4().hex[:6]}.txt")
-            with open(f,"w") as x: x.write("dummy data\n")
-            dynamic_items.append(f)
+        os.makedirs(d, exist_ok=True)
+        dynamic_items.append(d)
+        for __ in range(random.randint(1, 2)):
+            fpath = os.path.join(d, f"file_{uuid.uuid4().hex[:6]}.txt")
+            with open(fpath, "w") as x:
+                x.write("dummy data\n")
+            dynamic_items.append(fpath)
 
 # ——— 7) Custom FTPShell —————————————————————————————————————
 class HoneyShell(ftp.FTPShell):
@@ -231,10 +234,12 @@ class HoneyFTP(ftp.FTP):
         self.token = create_honeytoken(peer, self.session)
 
     def connectionLost(self, reason):
-        peer = getattr(self.transport.getPeer(),"host","?")
+        peer = getattr(self.transport.getPeer(), "host", "?")
         logging.info("DISCONNECT ip=%s session=%s", peer, self.session)
-        try: os.remove(os.path.join(ROOT_DIR, self.token))
-        except: pass
+        try:
+            os.remove(os.path.join(ROOT_DIR, self.token))
+        except:
+            pass
         self.logf.close()
         super().connectionLost(reason)
 
@@ -247,23 +252,26 @@ class HoneyFTP(ftp.FTP):
 
     def ftp_PASS(self, pw):
         peer = self.transport.getPeer().host
-        if failed_attempts.get(peer,0) >= BRUTEF_THR:
+        if failed_attempts.get(peer, 0) >= BRUTEF_THR:
             d = defer.Deferred()
             reactor.callLater(DELAY_SEC, d.callback, (ftp.RESPONSE[ftp.AUTH_FAILED][0],))
             return d
-        logging.info("PASS ip=%s usr=%s pw=%s", peer, getattr(self,"username","?"), pw)
+        logging.info("PASS ip=%s usr=%s pw=%s", peer, getattr(self, "username", "?"), pw)
         self.logf.write(f"PASS {pw}\n")
         d = super().ftp_PASS(pw)
+
         def onFail(err):
-            failed_attempts[peer] = failed_attempts.get(peer,0) + 1
+            failed_attempts[peer] = failed_attempts.get(peer, 0) + 1
             if failed_attempts[peer] >= BRUTEF_THR:
                 alert(f"Bruteforce detected from {peer}")
             return err
+
         def onSucc(res):
-            failed_attempts.pop(peer,None)
+            failed_attempts.pop(peer, None)
             randomize_fs()
             return res
-        d.addCallbacks(onSucc,onFail)
+
+        d.addCallbacks(onSucc, onFail)
         return d
 
     def ftp_RETR(self, path):
@@ -288,16 +296,16 @@ class HoneyFTP(ftp.FTP):
         peer = self.transport.getPeer().host
         cmd  = line.decode("latin-1").strip()
         logging.info("CMD ip=%s cmd=%s", peer, cmd)
-        self.logf.write(cmd+"\n")
+        self.logf.write(cmd + "\n")
         self.count += 1
-        if self.count>20 and (datetime.utcnow()-self.start).total_seconds()<10:
+        if self.count > 20 and (datetime.utcnow() - self.start).total_seconds() < 10:
             alert(f"Fast scanner detected from {peer}")
-            reactor.callLater(random.uniform(1,3),lambda:None)
+            reactor.callLater(random.uniform(1, 3), lambda: None)
         return super().lineReceived(line)
 
 class HoneypotFactory(ftp.FTPFactory):
-    protocol = HoneyFTP
-    welcomeMessage = "(vsFTPd 2.3.4)"
+    protocol        = HoneyFTP
+    welcomeMessage  = "(vsFTPd 2.3.4)"
 
 # ——— 9) Corrected Realm using requestAvatar —————————————————————
 class HoneyRealm:
