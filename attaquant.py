@@ -4,15 +4,15 @@
 Attacker Implicit-FTPS — script complet et corrigé
 
 Fonctionnalités :
- - Connexion TLS implicite (SSL4) dès la création de socket
+ - TLS implicite dès la connexion TCP
  - Test des comptes anonymous/"" et attacker/secret
- - NLST "." pour lister la racine
+ - NLST "." pour lister le répertoire racine
  - Téléchargement automatique de passwords.txt et secrets/ssh_key
- - Optionnel : upload d’un fichier (--upload)
+ - Upload optionnel d’un fichier (--upload)
  - argparse flexible (host, port, users, pwds, download, upload)
  - Logging console + fichier (~/attacker.log même sous sudo)
- - Coloration de la sortie (colorama)
- - Mesure des temps et résumé en fin de run
+ - Couleurs (colorama)
+ - Mesure des durées et résumé en fin de run
 """
 
 import os
@@ -25,7 +25,7 @@ import time
 import subprocess
 from ftplib import FTP, error_perm
 
-# → installer colorama si besoin
+# ─── Colorama (auto-install) ───────────────────────────────────────────────
 try:
     from colorama import init, Fore, Style
 except ImportError:
@@ -33,7 +33,7 @@ except ImportError:
     from colorama import init, Fore, Style
 init(autoreset=True)
 
-# → arguments CLI
+# ─── argparse ───────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Attacker Implicit-FTPS")
 parser.add_argument("-H","--host",    default="192.168.100.51",
                     help="IP ou hostname du honeypot")
@@ -41,22 +41,22 @@ parser.add_argument("-P","--port",    default=2121, type=int,
                     help="Port FTPS implicite")
 parser.add_argument("-U","--users",   nargs="+",
                     default=["anonymous","attacker"],
-                    help="Liste des utilisateurs à tester")
+                    help="Utilisateurs à tester")
 parser.add_argument("-W","--pwds",    nargs="+",
                     default=["","secret"],
-                    help="Liste des passwords correspondants")
+                    help="Mots de passe correspondants")
 parser.add_argument("-d","--download",
                     default="~/ftp_downloads",
-                    help="Dossier local pour les téléchargements")
+                    help="Répertoire local pour les téléchargements")
 parser.add_argument("-u","--upload",
                     help="Chemin local d’un fichier à uploader")
 args = parser.parse_args()
 
-# → calculer le vrai home si on est en sudo
+# ─── Détection du vrai HOME (même sous sudo) ────────────────────────────────
 sudo_user = os.environ.get("SUDO_USER")
-HOME = os.path.expanduser(f"~{sudo_user}") if sudo_user else os.path.expanduser("~")
+HOME      = os.path.expanduser(f"~{sudo_user}") if sudo_user else os.path.expanduser("~")
 
-# → préparation du dossier de téléchargements
+# ─── Préparation du dossier de téléchargement ────────────────────────────────
 DOWNLOAD_DIR = os.path.expanduser(args.download.replace("~", HOME))
 try:
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -65,61 +65,58 @@ except PermissionError:
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     print(Fore.YELLOW + "[WARN] Permission denied, fallback download → /tmp/ftp_downloads")
 
-# → configuration du logger
+# ─── Logging console + fichier ──────────────────────────────────────────────
 logger = logging.getLogger("attacker")
 logger.setLevel(logging.INFO)
-formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 
-# console handler
 ch = logging.StreamHandler(sys.stdout)
-ch.setFormatter(formatter)
+ch.setFormatter(fmt)
 logger.addHandler(ch)
 
-# file handler
 LOG_PATH = os.path.join(HOME, "attacker.log")
 try:
     fh = logging.FileHandler(LOG_PATH)
-    fh.setFormatter(formatter)
+    fh.setFormatter(fmt)
     logger.addHandler(fh)
     logger.info(f"Logging to {LOG_PATH}")
 except PermissionError:
     logger.warning("Cannot write to file log, skipping file log")
 
-# → fichiers canary à récupérer
+# ─── Canary files à récupérer ────────────────────────────────────────────────
 CANARY_FILES = ["passwords.txt", "secrets/ssh_key"]
 
-def try_user(user: str, pwd: str):
+def try_login(user: str, pwd: str):
     t0 = time.time()
     logger.info(Fore.CYAN + f"Testing {user!r}/{pwd!r} on {args.host}:{args.port}")
     try:
         # 1) Connexion TCP
-        raw_sock = socket.create_connection((args.host, args.port), timeout=10)
+        raw = socket.create_connection((args.host, args.port), timeout=10)
 
         # 2) TLS implicite
-        ctx   = ssl._create_unverified_context()
-        tls_s = ctx.wrap_socket(raw_sock, server_hostname=args.host)
+        ctx  = ssl._create_unverified_context()
+        ss   = ctx.wrap_socket(raw, server_hostname=args.host)
 
-        # 3) greffer ftplib.FTP sur la socket TLS
+        # 3) Greffe ftplib.FTP sur la socket TLS
         ftp = FTP()
-        ftp.sock = tls_s
-        ftp.file = tls_s.makefile('r', encoding='utf-8', newline='\r\n')
-        ftp.af = tls_s.family
-        ftp.passiveserver = True
+        ftp.sock = ss
+        ftp.file = ss.makefile('r', encoding='utf-8', newline='\r\n')
+        ftp.af, ftp.passiveserver = ss.family, True
 
-        # 4) bannière
+        # 4) Bannière
         banner = ftp.getresp().strip()
         logger.info(Fore.YELLOW + banner)
 
-        # 5) login
+        # 5) LOGIN
         resp = ftp.login(user, pwd)
         logger.info(Fore.GREEN + f"LOGIN OK: {resp}")
 
-        # 6) listing racine
+        # 6) NLST "."
         files = ftp.nlst(".")
         files = [f.lstrip("./") for f in files]
         logger.info(Fore.MAGENTA + f"FILES: {files}")
 
-        # 7) téléchargement des canary
+        # 7) Télécharger les canaries
         for cf in CANARY_FILES:
             if cf in files:
                 out = os.path.join(DOWNLOAD_DIR, f"{user}_{cf.replace('/','_')}")
@@ -128,12 +125,12 @@ def try_user(user: str, pwd: str):
                     ftp.retrbinary(f"RETR {cf}", fd.write)
                 logger.info(Fore.GREEN + "   ✓ Download succeeded")
 
-        # 8) upload optionnel
+        # 8) Upload optionnel
         if args.upload:
-            fname = os.path.basename(args.upload)
-            logger.info(Fore.BLUE + f"↑ UPLOAD {args.upload} → /{fname}")
+            base = os.path.basename(args.upload)
+            logger.info(Fore.BLUE + f"↑ UPLOAD {args.upload} → /{base}")
             with open(os.path.expanduser(args.upload), "rb") as rd:
-                ftp.storbinary(f"STOR {fname}", rd)
+                ftp.storbinary(f"STOR {base}", rd)
             logger.info(Fore.GREEN + "   ✓ Upload succeeded")
 
         ftp.quit()
@@ -151,7 +148,7 @@ def main():
     results = []
     for idx, user in enumerate(args.users):
         pwd = args.pwds[idx] if idx < len(args.pwds) else ""
-        ok, dur = try_user(user, pwd)
+        ok, dur = try_login(user, pwd)
         results.append((user, ok, dur))
 
     logger.info("[*] SUMMARY")
