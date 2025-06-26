@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Attacker FTPS implicite — script plus complet et plus joli.
+Attacker FTPS implicite — script plus complet et robuste.
 
 Features :
  - Implicit FTPS (wrap_socket dès connect)
- - Multi-utilisateurs / multi-mots de passe via CLI
+ - Multi-utilisateurs / multi-passwords via CLI
  - Téléchargement de 'passwords.txt' + autres canaries
  - Upload de fichier de test (--upload)
  - Mesure de latence
  - Sorties colorées avec colorama
- - Logging local dans attacker.log
+ - Logging local dans un dossier écrivable
  - Résumé des succès/échecs
 """
 
@@ -21,116 +21,138 @@ import socket
 import argparse
 import logging
 import time
+import subprocess
+
 from ftplib import FTP, error_perm
 
-# 1) bootstrap colorama
+# — Bootstrap colorama si nécessaire
 try:
     from colorama import init, Fore, Style
 except ImportError:
-    print("[BOOTSTRAP] Installing colorama…")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "colorama"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "colorama"])
     from colorama import init, Fore, Style
 init(autoreset=True)
 
-# 2) CLI
-p = argparse.ArgumentParser(description="Attacker FTPS implicite script")
-p.add_argument("-H","--host",   default="192.168.100.51", help="IP du honeypot")
-p.add_argument("-P","--port",   default=2121,    type=int, help="Port FTPS")
-p.add_argument("-U","--users",  nargs="+",      default=["anonymous","attacker"],
-               help="Liste d'utilisateurs à tester")
-p.add_argument("-W","--pwds",   nargs="+",      default=["","secret"],
-               help="Liste de mots de passe (1:1 avec --users si même taille)")
-p.add_argument("-u","--upload",  help="Chemin local d'un fichier à uploader")
-p.add_argument("-d","--download",default="ftp_downloads",
-               help="Dossier local pour les téléchargements")
-args = p.parse_args()
+# — CLI
+parser = argparse.ArgumentParser(description="Attacker FTPS implicite")
+parser.add_argument("-H","--host",    default="192.168.100.51", help="IP du honeypot")
+parser.add_argument("-P","--port",    default=2121, type=int,    help="Port FTPS")
+parser.add_argument("-U","--users",   nargs="+",                required=True,
+                    help="Liste d'utilisateurs à tester")
+parser.add_argument("-W","--pwds",    nargs="+",                required=True,
+                    help="Liste de passwords (1:1 avec --users)")
+parser.add_argument("-d","--download",default="ftp_downloads",
+                    help="Dossier local pour les téléchargements")
+parser.add_argument("-u","--upload",  help="Chemin local d'un fichier à uploader")
+parser.add_argument("-l","--log",     help="Chemin du fichier de log")
+args = parser.parse_args()
 
-# 3) Logging
-LOG_FILE = "attacker.log"
-logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
-console = logging.StreamHandler(sys.stdout)
-console.setLevel(logging.INFO)
-logging.getLogger().addHandler(console)
+# — Prépare dossier de download
+DOWNLOAD_DIR = os.path.expanduser(args.download)
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# 4) Prépare le dossier de download
-os.makedirs(args.download, exist_ok=True)
+# — Détermine où écrire le log
+if args.log:
+    log_path = os.path.expanduser(args.log)
+else:
+    # par défaut : ~/HoneyFTP/attacker.log si possible
+    default_dir = os.path.expanduser("~/HoneyFTP")
+    if os.access(default_dir, os.W_OK):
+        os.makedirs(default_dir, exist_ok=True)
+        log_path = os.path.join(default_dir, "attacker.log")
+    else:
+        # fallback dans ~/.cache
+        cache_dir = os.path.expanduser("~/.cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        log_path = os.path.join(cache_dir, "attacker.log")
 
-# 5) Canaries connues
-CANARY_FILES = ["passwords.txt","secrets/ssh_key"]
-# (vous pouvez en ajouter ici)
+# — Logging
+logger = logging.getLogger("attacker")
+logger.setLevel(logging.INFO)
+ch = logging.StreamHandler(sys.stdout)
+ch.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
-def try_user(user, pwd):
+# FileHandler optionnel
+try:
+    fh = logging.FileHandler(log_path)
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+    logger.info(f"Logging to {log_path}")
+except PermissionError as e:
+    logger.warning(f"Impossible d’écrire le log dans {log_path}: {e}")
+    logger.info("Continuing without file logging.")
+
+# — Canaries connus
+CANARY_FILES = ["passwords.txt", "secrets/ssh_key"]
+
+def try_user(user: str, pwd: str):
     start = time.time()
-    print(Fore.CYAN + f"\n[*] Test {user!r}/{pwd!r} sur {args.host}:{args.port}")
+    logger.info(Fore.CYAN + f"Test {user!r}/{pwd!r} sur {args.host}:{args.port}")
     try:
-        # TCP + TLS implicite
         raw = socket.create_connection((args.host, args.port), timeout=10)
         ctx = ssl._create_unverified_context()
         ss  = ctx.wrap_socket(raw, server_hostname=args.host)
+
         ftp = FTP()
-        ftp.sock         = ss
-        ftp.file         = ss.makefile('r', encoding='utf-8', newline='\r\n')
-        ftp.af           = ss.family
-        ftp.passiveserver= True
+        ftp.sock          = ss
+        ftp.file          = ss.makefile('r', encoding='utf-8', newline='\r\n')
+        ftp.af            = ss.family
+        ftp.passiveserver = True
 
         banner = ftp.getresp().strip()
-        print(Style.BRIGHT + banner)
-        logging.info(f"{user}@login banner: {banner}")
+        logger.info(Fore.YELLOW + banner)
 
         resp = ftp.login(user, pwd)
-        print(Fore.GREEN + "  LOGIN OK :", resp)
-        logging.info(f"{user}@login success")
+        logger.info(Fore.GREEN + f"LOGIN OK: {resp}")
 
         files = ftp.nlst(".")
-        # nettoie les "./"
         files = [f.lstrip("./") for f in files]
-        print(Fore.YELLOW + "  FILES    :", files)
-        logging.info(f"{user}@nlst: {files}")
+        logger.info(Fore.MAGENTA + f"NLST: {files}")
 
-        # téléchargement des canaries présentes
+        # téléchargement des canaries
         for cf in CANARY_FILES:
             if cf in files:
-                out = os.path.join(args.download, f"{user}_{cf}")
-                print(Fore.MAGENTA + f"  ↓ DL {cf} -> {out}")
-                with open(out,"wb") as fd:
+                out = os.path.join(DOWNLOAD_DIR, f"{user}_{cf}")
+                logger.info(Fore.BLUE + f"↓ DL {cf} → {out}")
+                with open(out, "wb") as fd:
                     ftp.retrbinary(f"RETR {cf}", fd.write)
-                print(Fore.GREEN + "    ✓ DL réussi")
-                logging.info(f"{user}@download {cf} OK")
+                logger.info(Fore.GREEN + "   ✓ DL réussi")
 
         # upload si demandé
         if args.upload:
             base = os.path.basename(args.upload)
-            print(Fore.BLUE + f"  ↑ UPLOAD {args.upload} -> /{base}")
-            with open(args.upload,"rb") as rd:
+            logger.info(Fore.BLUE + f"↑ UPLOAD {args.upload} → /{base}")
+            with open(os.path.expanduser(args.upload), "rb") as rd:
                 ftp.storbinary(f"STOR {base}", rd)
-            print(Fore.GREEN + "    ✓ Upload réussi")
-            logging.info(f"{user}@upload {base} OK")
+            logger.info(Fore.GREEN + "   ✓ Upload réussi")
 
         ftp.quit()
         return True, time.time() - start
 
     except error_perm as e:
-        print(Fore.RED + "  ! PERM ERROR:", e)
-        logging.warning(f"{user}@perm failed: {e}")
+        logger.warning(Fore.RED + f"Perm error for {user}: {e}")
     except Exception as e:
-        print(Fore.RED + "  ! ERREUR     :", e)
-        logging.exception(f"{user}@exception")
+        logger.error(Fore.RED + f"Erreur pour {user}: {e}", exc_info=True)
+
     return False, time.time() - start
 
 def main():
-    print(Style.BRIGHT + Fore.CYAN + "[*] Lancement du script attacker.py")
+    logger.info("[*] Début Attacker")
     results = []
     for i, user in enumerate(args.users):
         pwd = args.pwds[i] if i < len(args.pwds) else ""
-        ok, dt = try_user(user, pwd)
-        results.append((user, ok, dt))
-    print(Style.BRIGHT + "\n[*] RÉSUMÉ :")
-    for user, ok, dt in results:
-        status = Fore.GREEN+"OK" if ok else Fore.RED+"KO"
-        print(f"  - {user:10s} : {status} en {dt:.2f}s")
-    print(Style.BRIGHT + Fore.CYAN + f"\nLogs détaillés dans {LOG_FILE}")
-    print(Style.BRIGHT + Fore.CYAN + f"Téléchargements dans {args.download}")
+        ok, dur = try_user(user, pwd)
+        results.append((user, ok, dur))
+    logger.info("[*] Résumé:")
+    for user, ok, dur in results:
+        status = Fore.GREEN + "OK" if ok else Fore.RED + "KO"
+        logger.info(f" - {user:10s} : {status} en {dur:.2f}s")
+    logger.info(f"Téléchargements dans {DOWNLOAD_DIR}")
+    logger.info("Fin Attacker")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
