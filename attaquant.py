@@ -1,63 +1,69 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script de test Implicit FTPS (TLS implicite sur le port) vers le honeypot.
-Affiche chaque étape pour déboguer.
+Client Implicit FTPS (TLS implicite sur le port) pour votre honeypot.
 """
 
+import socket
 import ssl
-from ftplib import FTP_TLS
+from ftplib import FTP
 
-HOST = "192.168.100.51"  # ← mettez ici l’IP de votre honeypot
+HOST = "192.168.100.51"   # ← changez ceci pour l'IP de votre honeypot
 PORT = 2121
 
 def test_login(user, pw):
-    print(f"\n[*] Tentative de connexion en tant que {user!r} …")
+    print(f"\n[*] Tentative de connexion en tant que {user!r} …", flush=True)
     try:
-        # 1) on crée un contexte qui ignore le certif auto-signé
+        # 1) Connexion TCP
+        print("  > Création de la socket TCP …", flush=True)
+        raw = socket.create_connection((HOST, PORT))
+
+        # 2) Enveloppement TLS implicite
+        print("  > Enveloppement TLS implicite …", flush=True)
         ctx = ssl._create_unverified_context()
+        ssock = ctx.wrap_socket(raw, server_hostname=HOST)
 
-        # 2) on instancie FTP_TLS (mais on ne fera pas AUTH TLS explicite)
-        ftps = FTP_TLS(context=ctx)
+        # 3) Initialiser ftplib.FTP sur cette socket chiffrée
+        ftp = FTP()
+        ftp.sock = ssock
+        ftp.file = ssock.makefile('rb')
+        # lire la bannière de bienvenue
+        welcome = ftp.getresp()
+        print(f"    >>> Bannière : {welcome.strip()!r}", flush=True)
 
-        # 3) on ouvre la connexion TCP
-        print("  > connect() …")
-        ftps.connect(HOST, PORT)
+        # 4) LOGIN
+        print("  > Envoi de USER/PASS …", flush=True)
+        resp = ftp.login(user, pw)
+        print(f"    >>> Réponse login : {resp!r}", flush=True)
 
-        # 4) on wrap directement la socket pour faire du TLS implicite
-        print("  > wrapping socket pour TLS implicite …")
-        ftps.sock = ctx.wrap_socket(ftps.sock, server_hostname=HOST)
-        ftps.file = ftps.sock.makefile('rb')  # adapter le file handle interne
+        # 5) Sécuriser le canal de données
+        print("  > Activation du mode prot_p() …", flush=True)
+        ftp.prot_p()
 
-        # 5) on peut maintenant envoyer USER/PASS
-        print("  > login() …")
-        ftps.login(user, pw)
+        print(f"[+] Connexion réussie : {user!r}", flush=True)
 
-        # 6) on passe le canal de données en TLS également
-        print("  > prot_p() …")
-        ftps.prot_p()
+        # 6) LISTING
+        files = ftp.nlst()
+        print("    Contenu du répertoire racine :", files, flush=True)
 
-        print(f"[+] Connexion réussie : {user!r}")
-        files = ftps.nlst()
-        print("    Contenu :", files)
-
+        # 7) Téléchargement du canary
         if "passwords.txt" in files:
             local = f"{user}_passwords.txt"
-            print(f"    Téléchargement de passwords.txt → {local}")
+            print(f"  > Téléchargement de passwords.txt → {local}", flush=True)
             with open(local, "wb") as f:
-                ftps.retrbinary("RETR passwords.txt", f.write)
-            print("[+] Téléchargement terminé")
+                ftp.retrbinary("RETR passwords.txt", f.write)
+            print("[+] Téléchargement terminé", flush=True)
 
-        ftps.quit()
+        ftp.quit()
 
     except Exception as e:
-        print(f"[-] Échec pour {user!r} :", e)
+        print(f"[-] Échec pour {user!r} :", e, flush=True)
 
 def main():
-    print("[*] Début du script attacker.py")
+    print("[*] Début du script attacker.py", flush=True)
     test_login("anonymous", "")
     test_login("attacker", "secret")
-    print("[*] Fin du script")
+    print("[*] Fin du script", flush=True)
 
 if __name__ == "__main__":
     main()
