@@ -3,54 +3,72 @@
 """
 High-Interaction FTP Honeypot
 
-– Bootstrap des dépendances  
-– Certificat TLS auto-signé dans ROOT_DIR  
-– FTPS implicite  
-– Auth anonym + attacker/secret  
-– Canary-files, honeytoken par session  
-– FS dynamique  
-– Quarantine des uploads + MD5/SHA256  
-– Détection bruteforce + tarpitting adaptatif  
-– Détection Tor exit-nodes  
-– Commandes SITE factices  
-– Logs par session + central
+Features:
+– Auto-bootstrap pip deps (Twisted, requests, service-identity, pin cryptography<39 on Py3.7)
+– Auto-generate self-signed TLS cert (server.key/server.crt) inside a writable ROOT_DIR
+– Implicit FTPS (SSL4ServerEndpoint)
+– Anonymous + attacker/secret login
+– Canary files + per-session honeytoken
+– Dynamic filesystem (random dirs/files)
+– Quarantine uploaded files + MD5/SHA256 logging
+– Brute-force throttling + tarpitting
+– Tor exit-node detection
+– Fake SITE commands (EXEC/CHMOD/SHELL)
+– Central + per-session logging
 """
 
-import os, sys, subprocess, shutil, uuid, hashlib, random, logging, smtplib
+import os
+import sys
+import subprocess
+import shutil
+import uuid
+import hashlib
+import random
+import logging
+import smtplib
+import tempfile
+
 from datetime import datetime, timedelta
 import requests
 
-# ————— 1) Bootstrap pip —————
+# ——— 1) Bootstrap pip dependencies —————————————————————————————————
 def ensure_installed(pkg, imp=None):
     try:
         __import__(imp or pkg)
     except ImportError:
-        print(f"[BOOTSTRAP] Installing {pkg}…")
+        print(f"[BOOTSTRAP] pip install {pkg}")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pkg])
 
-for pkg,imp in [
-    ("twisted",None),
-    ("requests",None),
-    ("service-identity","service_identity"),
-    ("cryptography<39",None),
+for pkg, imp in [
+    ("twisted", None),
+    ("requests", None),
+    ("service-identity", "service_identity"),
+    ("cryptography<39", None),
 ]:
     ensure_installed(pkg, imp)
 
-# ————— 2) Configuration paths —————
-ROOT_DIR       = "virtual_fs"
-KEY_FILE       = os.path.join(ROOT_DIR, "server.key")
-CERT_FILE      = os.path.join(ROOT_DIR, "server.crt")
-QUARANTINE_DIR = "quarantine"
-SESSION_DIR    = "sessions"
-LOG_FILE       = os.path.join(ROOT_DIR, "honeypot.log")  # dans ROOT_DIR
+# ——— 2) Determine writable base directory ——————————————————————————
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if os.access(script_dir, os.W_OK):
+    BASE_DIR = script_dir
+else:
+    BASE_DIR = os.path.join(tempfile.gettempdir(), "HoneyFTP")
+    os.makedirs(BASE_DIR, exist_ok=True)
+    print(f"[WARNING] {script_dir} not writable, using {BASE_DIR}")
+
+ROOT_DIR       = os.path.join(BASE_DIR, "virtual_fs")
+QUARANTINE_DIR = os.path.join(BASE_DIR, "quarantine")
+SESSION_DIR    = os.path.join(BASE_DIR, "sessions")
+LOG_FILE       = os.path.join(BASE_DIR, "honeypot.log")
+
 TOR_EXIT_URL   = "https://check.torproject.org/torbulkexitlist"
 BRUTEF_THR     = 5
 DELAY_SEC      = 2
-CANARY_FILES   = {"passwords.txt","secrets/ssh_key"}
-LISTEN_PORT    = int(os.getenv("HONEYFTP_PORT","2121"))
+CANARY_FILES   = {"passwords.txt", "secrets/ssh_key"}
+LISTEN_PORT    = int(os.getenv("HONEYFTP_PORT", "2121"))
 
-SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK")
-SMTP_CFG      = (
+SLACK_WEBHOOK  = os.getenv("SLACK_WEBHOOK")
+SMTP_CFG       = (
     os.getenv("SMTP_SERVER"),
     int(os.getenv("SMTP_PORT","0")) or 25,
     os.getenv("SMTP_USER"),
@@ -59,32 +77,51 @@ SMTP_CFG      = (
     os.getenv("ALERT_TO"),
 )
 
-# ————— 3) Créer les dossiers —————
+# ——— 3) Create directories & configure logging ——————————————————————
 os.makedirs(ROOT_DIR,       exist_ok=True)
 os.makedirs(QUARANTINE_DIR, exist_ok=True)
 os.makedirs(SESSION_DIR,    exist_ok=True)
 
-# Fichiers-leurres init
-for p,c in {
-    "passwords.txt":"admin:admin",
-    "secrets/ssh_key":"FAKE_SSH_KEY",
-    "docs/readme.txt":"Welcome to the FTP server",
+handlers = [logging.StreamHandler()]
+try:
+    handlers.insert(0, logging.FileHandler(LOG_FILE))
+except Exception as e:
+    print(f"[WARNING] cannot write central log {LOG_FILE}: {e}")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+    handlers=handlers
+)
+
+# Static lure files
+for path, content in {
+    "passwords.txt":   "admin:admin",
+    "secrets/ssh_key": "FAKE_SSH_KEY",
+    "docs/readme.txt": "Welcome to the FTP server",
 }.items():
-    fp=os.path.join(ROOT_DIR,p)
+    fp = os.path.join(ROOT_DIR, path)
     os.makedirs(os.path.dirname(fp), exist_ok=True)
     if not os.path.exists(fp):
-        with open(fp,"w") as f: f.write(c)
+        with open(fp, "w") as f:
+            f.write(content)
 
-# ————— 4) Génération du certificat auto-signé —————
+failed_attempts = {}
+dynamic_items   = []
+
+# ——— 4) Auto-generate TLS certificate in ROOT_DIR ————————————————————
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-if not (os.path.exists(KEY_FILE) and os.path.exists(CERT_FILE)):
-    print("[BOOTSTRAP] Generating self-signed certificate…")
+KEY_FILE = os.path.join(ROOT_DIR, "server.key")
+CRT_FILE = os.path.join(ROOT_DIR, "server.crt")
+
+if not (os.path.exists(KEY_FILE) and os.path.exists(CRT_FILE)):
+    print("[BOOTSTRAP] generating self-signed TLS certificate…")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    with open(KEY_FILE,"wb") as f:
+    with open(KEY_FILE, "wb") as f:
         f.write(key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.TraditionalOpenSSL,
@@ -111,63 +148,48 @@ if not (os.path.exists(KEY_FILE) and os.path.exists(CERT_FILE)):
         )
         .sign(key, hashes.SHA256())
     )
-    with open(CERT_FILE,"wb") as f:
+    with open(CRT_FILE, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
 
-# ————— 5) Logging —————
-handlers = [logging.StreamHandler()]
-try:
-    fh = logging.FileHandler(LOG_FILE)
-    handlers.insert(0, fh)
-except Exception as e:
-    print(f"[WARNING] Cannot write log file {LOG_FILE}: {e}")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(message)s",
-    handlers=handlers
-)
-
-# ————— Imports Twisted —————
+# ——— 5) Import Twisted components —————————————————————————————
 from twisted.cred import portal, checkers
 from twisted.cred.checkers import AllowAnonymousAccess
 from twisted.internet import endpoints, reactor, ssl, defer
 from twisted.protocols import ftp
 from twisted.python import filepath
 
-failed_attempts = {}
-dynamic_items   = []
-
-# ————— 6) Helpers alert & Tor —————
+# ——— 6) Alert & Tor-check helpers —————————————————————————————
 def alert(msg: str):
     if SLACK_WEBHOOK:
         try: requests.post(SLACK_WEBHOOK, json={"text": msg}, timeout=5)
         except: pass
-    srv, port, user, pw, fr, to = SMTP_CFG
+    srv,port,user,pw,fr,to = SMTP_CFG
     if srv and fr and to:
         try:
             s = smtplib.SMTP(srv, port, timeout=5)
             if user:
                 s.starttls(); s.login(user, pw or "")
             mail = f"Subject: HoneyFTP Alert\nFrom: {fr}\nTo: {to}\n\n{msg}"
-            s.sendmail(fr, [to], mail); s.quit()
+            s.sendmail(fr, [to], mail)
+            s.quit()
         except: pass
 
 def is_tor_exit(ip: str) -> bool:
     try:
-        r = requests.get(TOR_EXIT_URL, timeout=5)
-        return ip in r.text.splitlines()
+        resp = requests.get(TOR_EXIT_URL, timeout=5)
+        return ip in resp.text.splitlines()
     except:
         return False
 
-def create_honeytoken(ip: str, sess: str) -> str:
+def create_honeytoken(ip: str, session: str) -> str:
     fn = f"secret_{uuid.uuid4().hex}.txt"
     full = os.path.join(ROOT_DIR, fn)
-    with open(full,"w") as f:
-        f.write(f"session={sess}\nip={ip}\n")
+    with open(full, "w") as f:
+        f.write(f"session={session}\nip={ip}\n")
     return fn
 
 def randomize_fs():
-    for p in dynamic_items[:]:
+    for p in list(dynamic_items):
         try:
             shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
         except: pass
@@ -180,9 +202,9 @@ def randomize_fs():
             with open(f,"w") as x: x.write("dummy data\n")
             dynamic_items.append(f)
 
-# ————— 7) Shell FTP personnalisé —————
+# ——— 7) Custom FTPShell —————————————————————————————————————
 class HoneyShell(ftp.FTPShell):
-    def __init__(self, avatar_id):
+    def __init__(self, avatar_id: str):
         super().__init__(filepath.FilePath(ROOT_DIR))
         self.avatarId = avatar_id
 
@@ -195,7 +217,7 @@ class HoneyShell(ftp.FTPShell):
     def openForWriting(self, path):
         return super().openForWriting(path)
 
-# ————— 8) Protocole + détection —————
+# ——— 8) FTP Protocol with detection —————————————————————————
 class HoneyFTP(ftp.FTP):
     def connectionMade(self):
         super().connectionMade()
@@ -209,7 +231,7 @@ class HoneyFTP(ftp.FTP):
         self.token = create_honeytoken(peer, self.session)
 
     def connectionLost(self, reason):
-        peer = getattr(self.transport.getPeer(), "host", "?")
+        peer = getattr(self.transport.getPeer(),"host","?")
         logging.info("DISCONNECT ip=%s session=%s", peer, self.session)
         try: os.remove(os.path.join(ROOT_DIR, self.token))
         except: pass
@@ -277,22 +299,28 @@ class HoneypotFactory(ftp.FTPFactory):
     protocol = HoneyFTP
     welcomeMessage = "(vsFTPd 2.3.4)"
 
-# ————— 9) Realm corrigé —————
+# ——— 9) Corrected Realm using requestAvatar —————————————————————
 class HoneyRealm:
+    """
+    Always return our HoneyShell for ANY username (anonymous or attacker).
+    """
     def requestAvatar(self, avatarId, mind, *interfaces):
         if ftp.IFTPShell in interfaces:
-            return ftp.IFTPShell, HoneyShell(avatarId), lambda: None
+            shell = HoneyShell(avatarId)
+            return ftp.IFTPShell, shell, lambda: None
         raise NotImplementedError()
 
 def main():
     p = portal.Portal(HoneyRealm())
+    # register attacker account first
     p.registerChecker(checkers.InMemoryUsernamePasswordDatabaseDontUse(attacker="secret"))
+    # then allow anonymous
     p.registerChecker(AllowAnonymousAccess())
 
-    ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CERT_FILE)
+    ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
     endpoints.SSL4ServerEndpoint(reactor, LISTEN_PORT, ctx).listen(HoneypotFactory(p))
     logging.info("Honeypot listening on port %s", LISTEN_PORT)
     reactor.run()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
