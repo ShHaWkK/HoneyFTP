@@ -31,6 +31,15 @@ The server listens on port `2121` by default and writes logs to `honeypot.log`.
 Set `HONEYFTP_PORT`, `SLACK_WEBHOOK` or `SMTP_SERVER` environment variables to
 enable alerts or change the port.
 
+By default the real server only starts after a UDP knock sequence on ports
+`4020`, `4021` puis `4022` depuis la même IP.
+
+Ensure the port is open in your firewall:
+
+```bash
+sudo ufw allow 2121/tcp
+```
+
 ## Deployment on Proxmox
 
 1. Créez un conteneur ou une VM Debian/Ubuntu sur votre hôte Proxmox.
@@ -50,4 +59,20 @@ enable alerts or change the port.
 
 Le service sera alors exposé sur le port choisi à l'intérieur de la VM ou du
 conteneur Proxmox. Vous pouvez rediriger le port depuis Proxmox si nécessaire.
+
+## Systemd Service
+
+Pour un démarrage automatique, copiez `honeyftp.service` vers
+`/etc/systemd/system/` puis activez le service :
+
+```bash
+sudo cp honeyftp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now honeyftp.service
+```
+Adaptez le chemin de `ExecStart` dans le fichier si vous installez les scripts
+ailleurs.
+
+Le service attendra la séquence de knock UDP `4020`, `4021`, `4022` avant de
+libérer le port FTP.
 

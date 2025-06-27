@@ -4,7 +4,7 @@
 High-Interaction FTP Honeypot (Implicit FTPS)
 
 Fonctionnalités :
-– Auto-bootstrap pip deps (Twisted, requests, service-identity, cryptography<39)  
+– Auto-bootstrap pip deps (Twisted, requests, service-identity, cryptography)
 – Certificat TLS auto-signé dans un répertoire inscriptible  
 – FTPS implicite (SSL4ServerEndpoint)  
 – Auth anonymous + attacker/secret  
@@ -21,19 +21,30 @@ Fonctionnalités :
 """
 
 import os, sys, subprocess, shutil, uuid, random, logging, smtplib, tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # 1) Bootstrap pip deps
 def ensure(pkg, imp=None):
-    try: __import__(imp or pkg)
+    try:
+        __import__(imp or pkg)
     except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pkg])
+        subprocess.check_call([
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--root-user-action=ignore",
+            "--disable-pip-version-check",
+            pkg,
+        ])
 
 for pkg, imp in [
     ("twisted", None),
     ("requests", None),
     ("service-identity","service_identity"),
-    ("cryptography<39", None),
+    ("cryptography", None),
+    ("pyOpenSSL", "OpenSSL"),
 ]:
     ensure(pkg, imp)
 
@@ -71,6 +82,7 @@ for rel, content in {
     "passwords.txt":   "admin:admin",
     "secrets/ssh_key": "FAKE_SSH_KEY",
     "docs/readme.txt": "Welcome to the FTP server",
+    "uploads/.keep":  "",
 }.items():
     fp = os.path.join(ROOT_DIR, rel)
     os.makedirs(os.path.dirname(fp), exist_ok=True)
@@ -102,8 +114,8 @@ if not (os.path.exists(KEY_FILE) and os.path.exists(CRT_FILE)):
            .subject_name(subj).issuer_name(subj)
            .public_key(key.public_key())
            .serial_number(x509.random_serial_number())
-           .not_valid_before(datetime.utcnow())
-           .not_valid_after(datetime.utcnow()+timedelta(days=365))
+           .not_valid_before(datetime.now(timezone.utc))
+           .not_valid_after(datetime.now(timezone.utc)+timedelta(days=365))
            .add_extension(
                x509.SubjectAlternativeName([x509.DNSName(u"localhost")]),
                critical=False
@@ -117,6 +129,7 @@ if not (os.path.exists(KEY_FILE) and os.path.exists(CRT_FILE)):
 from twisted.cred import portal, checkers
 from twisted.cred.checkers import AllowAnonymousAccess
 from twisted.internet import endpoints, reactor, ssl, defer
+from twisted.internet.protocol import DatagramProtocol
 from twisted.protocols import ftp
 from twisted.python import filepath
 
@@ -126,6 +139,7 @@ DELAY_SEC  = 2
 CANARY     = {"passwords.txt","secrets/ssh_key"}
 FORBID     = {"secrets"}        # supprimer un répertoire "secrets" déclenche alerta
 PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
+KNOCK_SEQ  = [4020, 4021, 4022]
 SLACK_URL  = os.getenv("SLACK_WEBHOOK")
 SMTP_CFG   = (
     os.getenv("SMTP_SERVER"),
@@ -162,6 +176,36 @@ def create_honeytoken(ip: str, sess: str) -> str:
         f.write(f"session={sess}\nip={ip}\n")
     return fn
 
+# Port-knocking logic
+ftp_started = False
+knock_state = {}
+class KnockProtocol(DatagramProtocol):
+    def __init__(self, port):
+        self.port = port
+    def datagramReceived(self, data, addr):
+        host = addr[0]
+        idx = knock_state.get(host, 0)
+        if KNOCK_SEQ[idx] == self.port:
+            knock_state[host] = idx + 1
+            if knock_state[host] == len(KNOCK_SEQ):
+                logging.info("Knock sequence ok from %s", host)
+                start_ftp()
+        else:
+            knock_state[host] = 0
+
+def start_ftp():
+    global ftp_started
+    if ftp_started:
+        return
+    ftp_started = True
+    realm = HoneyRealm(ROOT_DIR)
+    p     = portal.Portal(realm)
+    p.registerChecker(checkers.InMemoryUsernamePasswordDatabaseDontUse(attacker="secret"))
+    p.registerChecker(AllowAnonymousAccess())
+    ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
+    endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p))
+    logging.info("Honeypot FTPS listening on port %s", PORT)
+
 def randomize_fs(max_dirs=3, max_files=2, max_total=50):
     global dynamic_items
     for p in list(dynamic_items):
@@ -193,6 +237,15 @@ class HoneyShell(ftp.FTPShell):
         super().__init__(filepath.FilePath(ROOT_DIR))
         self.avatarId = avatar_id
 
+    def list(self, path, keys=()):
+        d = super().list(path, keys)
+        def _inject(res):
+            if not path:  # root listing
+                res.append(("root.txt", []))
+                res.append(("shadow.bak", []))
+            return res
+        return d.addCallback(_inject)
+
     def openForReading(self, path):
         rel = "/".join(path)
         if rel in CANARY:
@@ -212,7 +265,7 @@ class HoneyFTP(ftp.FTP):
         self.session = uuid.uuid4().hex
         peer        = self.transport.getPeer().host
         self.logf   = open(os.path.join(SESS_DIR,f"{self.session}.log"),"a")
-        self.start, self.count = datetime.utcnow(), 0
+        self.start, self.count = datetime.now(timezone.utc), 0
         logging.info("CONNECT %s session=%s", peer, self.session)
         if is_tor_exit(peer):
             alert(f"Tor exit node: {peer}")
@@ -318,6 +371,16 @@ class HoneyFTP(ftp.FTP):
             return ftp.CMD_OK, "CHMOD ignored"
         if cmd=="SHELL":
             return ftp.CMD_OK, "SHELL unavailable"
+        if cmd=="DEBUG":
+            self.logf.flush()
+            try:
+                with open(self.logf.name) as f:
+                    data = f.read()[-1024:]
+            except Exception as e:
+                data = f"log error: {e}"
+            return ftp.CMD_OK, data
+        if cmd=="SQLMAP":
+            return ftp.CMD_OK, "SQLi simulation complete"
         if cmd=="BOF":
             if len(rest)>1000:
                 logging.warning("SIMUL BOF by %s len=%d", self.transport.getPeer().host, len(rest))
@@ -330,7 +393,7 @@ class HoneyFTP(ftp.FTP):
         logging.info("CMD %s %s", peer, cmd)
         self.logf.write(cmd+"\n")
         self.count+=1
-        if self.count>20 and (datetime.utcnow()-self.start).total_seconds()<10:
+        if self.count>20 and (datetime.now(timezone.utc)-self.start).total_seconds()<10:
             alert(f"Fast scan {peer}")
             reactor.callLater(random.uniform(1,3), lambda:None)
         return super().lineReceived(line)
@@ -350,13 +413,9 @@ class HoneyRealm(ftp.FTPRealm):
 
 # 10) Main
 def main():
-    realm = HoneyRealm(ROOT_DIR)
-    p     = portal.Portal(realm)
-    p.registerChecker(checkers.InMemoryUsernamePasswordDatabaseDontUse(attacker="secret"))
-    p.registerChecker(AllowAnonymousAccess())
-    ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
-    endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p))
-    logging.info("Honeypot FTPS listening on port %s", PORT)
+    for p in KNOCK_SEQ:
+        reactor.listenUDP(p, KnockProtocol(p))
+    logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
     reactor.run()
 
 if __name__=="__main__":

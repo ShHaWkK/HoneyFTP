@@ -1,0 +1,12 @@
+[Unit]
+Description=HoneyFTP Honeypot
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/honeyftp/honeypot.py
+WorkingDirectory=/opt/honeyftp
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
