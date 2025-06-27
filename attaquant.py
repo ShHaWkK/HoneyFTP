@@ -14,7 +14,7 @@ import ssl
 import socket
 import argparse
 import time
-from ftplib import FTP, error_perm
+from ftplib import FTP, FTP_TLS, error_perm
 
 # colorama pour la couleur
 try:
@@ -46,18 +46,17 @@ def do_knock(host):
 
 def make_ftps(host, port, retries=3):
     """Établit la connexion FTPS implicite."""
+    ctx = ssl._create_unverified_context()
     for i in range(retries):
         try:
             raw = socket.create_connection((host, port), timeout=10)
             break
-        except OSError as e:
+        except OSError:
             if i == retries - 1:
                 raise
             time.sleep(1)
-            continue
-    ctx = ssl._create_unverified_context()
     ss = ctx.wrap_socket(raw, server_hostname=host)
-    ftp = FTP()
+    ftp = FTP_TLS(context=ctx)
     ftp.sock = ss
     ftp.file = ss.makefile('r', encoding='utf-8', newline='\r\n')
     ftp.af = ss.family
@@ -70,6 +69,11 @@ def make_ftps(host, port, retries=3):
 def do_login(ftp, user, pwd):
     try:
         resp = ftp.login(user, pwd)
+        if isinstance(ftp, FTP_TLS):
+            try:
+                ftp.prot_p()
+            except Exception:
+                pass
         print(Fore.GREEN + f"← LOGIN OK : {resp}")
         return True
     except error_perm as e:
@@ -184,11 +188,17 @@ def do_mkd_rmd(ftp):
 def fetch_report(ftp):
     """Récupère le log de session via ``SITE DEBUG`` et génère un rapport."""
     try:
-        resp = ftp.sendcmd("SITE DEBUG")
+        ftp.putcmd("SITE DEBUG")
+        resp = ftp.getmultiline()
     except Exception as e:
         print(Fore.RED + "× DEBUG fail:", e)
         return
-    data = resp[4:].strip() if resp.startswith("200 ") else resp.strip()
+    lines = resp.splitlines()
+    if lines and lines[0].startswith("200-"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("200"):
+        lines = lines[:-1]
+    data = "\n".join(lines).strip()
     try:
         with open(REPORT_FILE, "w") as f:
             f.write(data + "\n")
@@ -291,6 +301,8 @@ def main():
             continue
 
         if cmd in ("1", "2", "3"):
+            if not unlocked:
+                do_knock(args.host)
             if ftp:
                 try: ftp.quit()
                 except: pass
