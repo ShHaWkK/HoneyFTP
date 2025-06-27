@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Attacker Implicit-FTPS — Menu interactif (14 options)
+Attacker Implicit-FTPS — Menu interactif (17 options)
 
-Ajout de l’option « 0) Knock sequence » pour débloquer le FTPS via UDP-knocking.
+Ce client offre un ensemble de commandes unitaires pour tester le honeypot FTPS
+mais aussi quelques scripts prédéfinis qui enchaînent plusieurs actions.
+Un rapport de session peut être généré à partir du log retourné par
+``SITE DEBUG``.
 """
 
 import os
 import ssl
 import socket
 import argparse
+import time
 from ftplib import FTP, error_perm
 
 # colorama pour la couleur
@@ -22,6 +26,11 @@ except ImportError:
 
 init(autoreset=True)
 
+# Indique si la séquence de port-knocking a été envoyée
+unlocked = False
+# Fichier de sortie pour les rapports de session
+REPORT_FILE = "session_report.txt"
+
 
 def do_knock(host):
     """Envoie la séquence de port-knocking UDP 4020, 4021, 4022."""
@@ -30,12 +39,22 @@ def do_knock(host):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.sendto(b'', (host, p))
         s.close()
+    global unlocked
+    unlocked = True
     print(Fore.MAGENTA + "← Knock envoyés. Attendez quelques instants…\n")
 
 
-def make_ftps(host, port):
+def make_ftps(host, port, retries=3):
     """Établit la connexion FTPS implicite."""
-    raw = socket.create_connection((host, port), timeout=10)
+    for i in range(retries):
+        try:
+            raw = socket.create_connection((host, port), timeout=10)
+            break
+        except OSError as e:
+            if i == retries - 1:
+                raise
+            time.sleep(1)
+            continue
     ctx = ssl._create_unverified_context()
     ss = ctx.wrap_socket(raw, server_hostname=host)
     ftp = FTP()
@@ -162,6 +181,81 @@ def do_mkd_rmd(ftp):
         print(Fore.RED + "× RMD fail:", e)
 
 
+def fetch_report(ftp):
+    """Récupère le log de session via ``SITE DEBUG`` et génère un rapport."""
+    try:
+        resp = ftp.sendcmd("SITE DEBUG")
+    except Exception as e:
+        print(Fore.RED + "× DEBUG fail:", e)
+        return
+    data = resp[4:].strip() if resp.startswith("200 ") else resp.strip()
+    try:
+        with open(REPORT_FILE, "w") as f:
+            f.write(data + "\n")
+    except Exception as e:
+        print(Fore.RED + "× Write report fail:", e)
+        return
+    lines = [l for l in data.splitlines() if l]
+    downloads = [l[5:] for l in lines if l.startswith("RETR ")]
+    print(Fore.GREEN + f"✓ Rapport sauvegardé dans {REPORT_FILE}")
+    if lines:
+        print(Fore.CYAN + "Commandes enregistrées:")
+        for l in lines:
+            print("  " + l)
+    if downloads:
+        print(Fore.CYAN + "Fichiers téléchargés:")
+        for d in downloads:
+            print("  " + d)
+
+
+def script_enum(host, port):
+    """Connexion anonyme et quelques commandes de reconnaissance."""
+    if not unlocked:
+        do_knock(host)
+    ftp = make_ftps(host, port)
+    if not do_login(ftp, "anonymous", ""):
+        ftp.quit()
+        return
+    do_nlst(ftp)
+    do_cwd_traverse(ftp)
+    fetch_report(ftp)
+    ftp.quit()
+
+
+def script_attack(host, port):
+    """Exploitation automatisée avec l'utilisateur ``attacker``."""
+    if not unlocked:
+        do_knock(host)
+    ftp = make_ftps(host, port)
+    if not do_login(ftp, "attacker", "secret"):
+        ftp.quit()
+        return
+    do_nlst(ftp)
+    tmp = os.path.join(os.path.dirname(__file__), "exploit.txt")
+    with open(tmp, "w") as f:
+        f.write("exploit")
+    try:
+        with open(tmp, "rb") as f:
+            ftp.storbinary("STOR exploit.txt", f)
+        print(Fore.GREEN + "✓ Uploaded exploit.txt")
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    try:
+        ftp.retrbinary("RETR root.txt", lambda b: None)
+        print(Fore.GREEN + "✓ RETR root.txt")
+    except Exception as e:
+        print(Fore.RED + "× RETR root.txt:", e)
+    try:
+        ftp.sendcmd("SITE EXEC id")
+    except Exception:
+        pass
+    fetch_report(ftp)
+    ftp.quit()
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="127.0.0.1", help="Honeypot IP")
@@ -169,13 +263,14 @@ def main():
     args = p.parse_args()
 
     ftp = None
-    print(Fore.YELLOW + "=== Attacker Implicit-FTPS Menu ===")
     while True:
+        status = "UNLOCKED" if unlocked else "LOCKED"
+        print(Fore.YELLOW + f"=== Attacker Implicit-FTPS Menu ({status}) ===")
         print("""
- 0) Knock sequence (unlock FTPS)
- 1) anonymous/""
- 2) attacker/secret
- 3) custom
+0) Knock sequence (unlock FTPS)
+1) anonymous/""
+2) attacker/secret
+3) custom
  4) NLST
  5) RETR
  6) STOR
@@ -185,7 +280,10 @@ def main():
 10) RNFR/RNTO
 11) DELE
 12) MKD/RMD
-13) Quitter
+13) Session report
+14) Script reconnaissance
+15) Script attaque
+16) Quitter
 """)
         cmd = input("Votre choix > ").strip()
         if cmd == "0":
@@ -219,8 +317,13 @@ def main():
         elif cmd == "10" and ftp: do_rnfr_rnto(ftp)
         elif cmd == "11" and ftp: do_dele(ftp)
         elif cmd == "12" and ftp: do_mkd_rmd(ftp)
+        elif cmd == "13" and ftp: fetch_report(ftp)
+        elif cmd == "14":
+            script_enum(args.host, args.port)
+        elif cmd == "15":
+            script_attack(args.host, args.port)
 
-        elif cmd == "13":
+        elif cmd == "16":
             if ftp:
                 try: ftp.quit()
                 except: pass

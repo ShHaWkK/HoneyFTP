@@ -190,6 +190,8 @@ class KnockProtocol(DatagramProtocol):
             if knock_state[host] == len(KNOCK_SEQ):
                 logging.info("Knock sequence ok from %s", host)
                 start_ftp()
+                # reset state so additional packets don't raise IndexError
+                knock_state[host] = 0
         else:
             knock_state[host] = 0
 
@@ -386,7 +388,8 @@ class HoneyFTP(ftp.FTP):
                 logging.warning("SIMUL BOF by %s len=%d", self.transport.getPeer().host, len(rest))
                 return ftp.CMD_ERR, "500 Buffer overflow!"
             return ftp.CMD_OK, "SITE BOF OK"
-        return ftp.FTP.ftp_SITE(self, params)
+        # Unknown SITE sub-command → syntax error
+        return ftp.CMD_SYNTAX_ERR, params
 
     def lineReceived(self, line):
         peer, cmd = self.transport.getPeer().host, line.decode("latin-1").strip()
