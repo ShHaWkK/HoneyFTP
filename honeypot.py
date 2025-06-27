@@ -4,19 +4,19 @@
 High-Interaction FTP Honeypot (Implicit FTPS)
 
 Fonctionnalités :
-– Auto-bootstrap pip deps (Twisted, requests, service-identity, cryptography<39)
-– Certificat TLS auto-signé dans un répertoire inscriptible
-– FTPS implicite (SSL4ServerEndpoint)
-– Auth anonymous + attacker/secret
-– Canary-files + honeytoken par session
-– FS dynamique (dirs/fichiers aléatoires) avec quota
-– RNFR/RNTO → trace dans .rename.log
-– DELE → quarantaine + log
-– MKD/RMD → alertes sur dirs “interdits”
-– Tarpitting & brute-force throttling
-– Détection Tor exit-nodes
-– SITE EXEC/CHMOD/SHELL/BOF factices
-– Virtual directory traversal (CWD ../..)
+– Auto-bootstrap pip deps (Twisted, requests, service-identity, cryptography<39)  
+– Certificat TLS auto-signé dans un répertoire inscriptible  
+– FTPS implicite (SSL4ServerEndpoint)  
+– Auth anonymous + attacker/secret  
+– Canary-files + honeytoken par session  
+– FS dynamique (dirs/fichiers aléatoires) avec quota  
+– RNFR/RNTO → trace dans .rename.log  
+– DELE → quarantaine + log  
+– MKD/RMD → alertes sur dirs “interdits”  
+– Tarpitting & brute-force throttling  
+– Détection Tor exit-nodes  
+– SITE EXEC/CHMOD/SHELL/BOF factices  
+– Virtual directory traversal (CWD ../..)  
 – Logs centraux + par session
 """
 
@@ -43,7 +43,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-# 2) Détermine le répertoire de travail
+# 2) Détermine le répertoire de base
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if os.access(script_dir, os.W_OK):
     BASE = script_dir
@@ -66,7 +66,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(message)s",
                     handlers=handlers)
 
-# 4) Leurrage initial
+# 4) Leurres initiaux
 for rel, content in {
     "passwords.txt":   "admin:admin",
     "secrets/ssh_key": "FAKE_SSH_KEY",
@@ -124,7 +124,7 @@ TOR_LIST   = "https://check.torproject.org/torbulkexitlist"
 BRUTEF_THR = 5
 DELAY_SEC  = 2
 CANARY     = {"passwords.txt","secrets/ssh_key"}
-FORBID     = {"secrets"}
+FORBID     = {"secrets"}        # supprimer un répertoire "secrets" déclenche alerta
 PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
 SLACK_URL  = os.getenv("SLACK_WEBHOOK")
 SMTP_CFG   = (
@@ -173,6 +173,7 @@ def randomize_fs(max_dirs=3, max_files=2, max_total=50):
         if len(os.listdir(ROOT_DIR)) > max_total:
             return
     except: return
+
     for _ in range(random.randint(1, max_dirs)):
         try:
             d = os.path.join(ROOT_DIR, f"dir_{uuid.uuid4().hex[:6]}")
@@ -200,8 +201,8 @@ class HoneyShell(ftp.FTPShell):
 
     def ftp_CWD(self, path):
         if path.startswith(".."):
-            fake = f"drwxr-xr-x   2 root root 4096 Jan  1 00:00 {path}"
-            return (ftp.CMD_OK, f"250 Changed to {path}\nListing:\n{fake}")
+            fake = f"drwxr-xr-x   2 root root 4096 Jan 1 00:00 {path}"
+            return ftp.CMD_OK, f"250 Changed to {path}\nListing:\n{fake}"
         return super().ftp_CWD(path)
 
 # 8) Protocol
@@ -213,7 +214,8 @@ class HoneyFTP(ftp.FTP):
         self.logf   = open(os.path.join(SESS_DIR,f"{self.session}.log"),"a")
         self.start, self.count = datetime.utcnow(), 0
         logging.info("CONNECT %s session=%s", peer, self.session)
-        if is_tor_exit(peer): alert(f"Tor exit: {peer}")
+        if is_tor_exit(peer):
+            alert(f"Tor exit node: {peer}")
         self.token = create_honeytoken(peer, self.session)
 
     def connectionLost(self, reason):
@@ -233,7 +235,7 @@ class HoneyFTP(ftp.FTP):
 
     def ftp_PASS(self, pw):
         peer = self.transport.getPeer().host
-        if failed_attempts.get(peer,0)>=BRUTEF_THR:
+        if failed_attempts.get(peer,0) >= BRUTEF_THR:
             d = defer.Deferred()
             reactor.callLater(DELAY_SEC, d.callback,
                               (ftp.RESPONSE[ftp.AUTH_FAILED][0],))
@@ -242,9 +244,9 @@ class HoneyFTP(ftp.FTP):
         self.logf.write(f"PASS {pw}\n")
         d = super().ftp_PASS(pw)
         def onFail(e):
-            failed_attempts[peer]=failed_attempts.get(peer,0)+1
-            if failed_attempts[peer]>=BRUTEF_THR:
-                alert(f"Brute from {peer}")
+            failed_attempts[peer] = failed_attempts.get(peer,0) + 1
+            if failed_attempts[peer] >= BRUTEF_THR:
+                alert(f"Brute-force from {peer}")
             return e
         def onSucc(r):
             failed_attempts.pop(peer,None)
@@ -259,13 +261,13 @@ class HoneyFTP(ftp.FTP):
         logging.info("RNFR %s %s", peer, old)
         with open(os.path.join(SESS_DIR,f"{self.session}.rename.log"),"a") as rl:
             rl.write(f"RNFR {old}\n")
-        return (ftp.CMD_OK,"Ready for RNTO")
+        return ftp.CMD_OK, "Ready for RNTO"
 
     def ftp_RNTO(self, new):
         peer, old = self.transport.getPeer().host, getattr(self,"_old",None)
         new = new.lstrip("/")
         if not old:
-            return (ftp.SYNTAX_ERR,"RNFR first")
+            return ftp.SYNTAX_ERR, "RNFR first"
         src, dst = os.path.join(ROOT_DIR,old), os.path.join(ROOT_DIR,new)
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -273,9 +275,9 @@ class HoneyFTP(ftp.FTP):
             logging.info("RNTO %s %s→%s", peer, old, new)
             with open(os.path.join(SESS_DIR,f"{self.session}.rename.log"),"a") as rl:
                 rl.write(f"RNTO {old}→{new}\n")
-            return (ftp.CMD_OK,"Rename done")
+            return ftp.CMD_OK, "Rename done"
         except Exception as e:
-            return (ftp.FILE_UNAVAILABLE,f"Rename failed: {e}")
+            return ftp.FILE_UNAVAILABLE, f"Rename failed: {e}"
 
     def ftp_DELE(self, path):
         peer, rel = self.transport.getPeer().host, path.lstrip("/")
@@ -286,43 +288,42 @@ class HoneyFTP(ftp.FTP):
             os.replace(os.path.join(ROOT_DIR,rel), dst)
             logging.info("DELE %s %s→quarantine/%s", peer, rel, tag)
             self.logf.write(f"DELE {rel}→quarantine/{tag}\n")
-            return (ftp.CMD_OK,"Deleted")
+            return ftp.CMD_OK, "Deleted"
         except Exception as e:
-            return (ftp.FILE_UNAVAILABLE,f"Del failed: {e}")
+            return ftp.FILE_UNAVAILABLE, f"Del failed: {e}"
 
     def ftp_MKD(self, path):
-        # désormais géré via sendcmd côté client pour éviter timeout
-        return self.voidcmd(f"MKD {path}")
+        # délégation pour éviter timeout côté client
+        return ftp.FTP.ftp_MKD(self, path)
 
     def ftp_RMD(self, path):
-        # désormais géré via sendcmd
-        return self.voidcmd(f"RMD {path}")
+        return ftp.FTP.ftp_RMD(self, path)
 
     def ftp_RETR(self, path):
         rel, peer = path.lstrip("/"), self.transport.getPeer().host
         if rel in CANARY:
             alert(f"CANARY RETR {rel} by {peer}")
-        if rel==getattr(self,"token",None):
+        if rel == getattr(self,"token",None):
             logging.info("HONEYTOKEN DL %s session=%s", rel, self.session)
         self.logf.write(f"RETR {rel}\n")
         return super().ftp_RETR(path)
 
     def ftp_SITE(self, params):
         parts = params.strip().split(" ",1)
-        cmd = parts[0].upper(); arg = parts[1] if len(parts)>1 else ""
-        if cmd=="EXEC" and "/bin/bash" in arg:
-            return (ftp.CMD_OK,"Welcome to Fake Bash v1.0")
+        cmd = parts[0].upper()
+        rest = parts[1] if len(parts)>1 else ""
+        if cmd=="EXEC" and "/bin/bash" in rest:
+            return ftp.CMD_OK, "Welcome to Fake Bash v1.0"
         if cmd=="CHMOD":
-            return (ftp.CMD_OK,"CHMOD ignored")
+            return ftp.CMD_OK, "CHMOD ignored"
         if cmd=="SHELL":
-            return (ftp.CMD_OK,"SHELL unavailable")
+            return ftp.CMD_OK, "SHELL unavailable"
         if cmd=="BOF":
-            if len(arg)>1000:
-                logging.warning("SIMUL BOF by %s len=%d",
-                                self.transport.getPeer().host, len(arg))
-                return (ftp.CMD_ERR,"500 Buffer overflow, crash!")
-            return (ftp.CMD_OK,"SITE BOF OK")
-        return super().ftp_SITE(params)
+            if len(rest)>1000:
+                logging.warning("SIMUL BOF by %s len=%d", self.transport.getPeer().host, len(rest))
+                return ftp.CMD_ERR, "500 Buffer overflow!"
+            return ftp.CMD_OK, "SITE BOF OK"
+        return ftp.FTP.ftp_SITE(self, params)
 
     def lineReceived(self, line):
         peer, cmd = self.transport.getPeer().host, line.decode("latin-1").strip()
@@ -341,7 +342,7 @@ class HoneyFTPFactory(ftp.FTPFactory):
 
 class HoneyRealm(ftp.FTPRealm):
     def __init__(self, root: str):
-        super().__init__(root)  # string path
+        super().__init__(filepath.FilePath(root))
     def avatarForAnonymousUser(self):
         return HoneyShell("anonymous")
     def avatarForUsername(self, username: str):
