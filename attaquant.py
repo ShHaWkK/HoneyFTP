@@ -2,23 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Attacker Implicit-FTPS — Menu interactif
-
-1) anonymous/""
-2) attacker/secret
-3) custom
-4) NLST
-5) RETR
-6) STOR
-7) CWD ../.. (traversal)
-8) SITE EXEC /bin/bash
-9) SITE BOF [payload]
-10) RNFR/RNTO
-11) DELE
-12) MKD/RMD
-13) Quitter
 """
 
-import os, ssl, socket, argparse, uuid
+import os, ssl, socket, argparse
 from ftplib import FTP, error_perm
 try:
     from colorama import init, Fore
@@ -60,62 +46,90 @@ def do_nlst(ftp):
 
 def do_retr(ftp):
     fn = input("Fichier à RETR > ").strip()
-    dst = input("Local destination > ").strip() or fn
-    with open(os.path.expanduser(dst),"wb") as f:
-        ftp.retrbinary(f"RETR {fn}", f.write)
-    print(Fore.GREEN + f"✓ {fn} → {dst}")
+    dst = input("Local dest (~/...) > ").strip() or fn
+    dst = os.path.expanduser(dst)
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    try:
+        with open(dst,"wb") as f:
+            ftp.retrbinary(f"RETR {fn}", f.write)
+        print(Fore.GREEN + f"✓ {fn} → {dst}")
+    except Exception as e:
+        print(Fore.RED + "× RETR fail:", e)
 
 def do_stor(ftp):
     src = input("Local file to STOR > ").strip()
     src = os.path.expanduser(src)
     if not os.path.isfile(src):
-        print(Fore.RED + "Fichier invalide."); return
+        print(Fore.RED + "Invalid file."); return
     remote = input("Remote name > ").strip() or os.path.basename(src)
-    with open(src,"rb") as f:
-        ftp.storbinary(f"STOR {remote}", f)
-    print(Fore.GREEN + f"✓ Uploaded {src} → /{remote}")
+    try:
+        with open(src,"rb") as f:
+            ftp.storbinary(f"STOR {remote}", f)
+        print(Fore.GREEN + f"✓ Uploaded {src} → /{remote}")
+    except Exception as e:
+        print(Fore.RED + "× STOR fail:", e)
 
 def do_cwd_traverse(ftp):
-    resp = ftp.cwd("../..")
-    print(Fore.GREEN + f"← CWD ../.. : {resp}")
+    try:
+        resp = ftp.sendcmd("CWD ../..")
+        print(Fore.GREEN + "←", resp.replace("\r",""))
+    except Exception as e:
+        print(Fore.RED + "× CWD fail:", e)
 
 def do_site_exec(ftp):
     cmd = input("Commande shell > ").strip()
-    resp = ftp.sendcmd(f"SITE EXEC {cmd}")
-    print(Fore.GREEN + "←", resp)
+    try:
+        resp = ftp.sendcmd(f"SITE EXEC {cmd}")
+        print(Fore.GREEN + "←", resp)
+    except Exception as e:
+        print(Fore.RED + "× SITE EXEC fail:", e)
 
 def do_site_bof(ftp):
     length = int(input("Taille payload > ").strip() or "1024")
-    payload = "A" * length
+    payload = "A"*length
     try:
         resp = ftp.sendcmd(f"SITE BOF {payload}")
         print(Fore.GREEN + "←", resp)
     except Exception as e:
-        print(Fore.RED + "←", e)
+        print(Fore.RED + "× SITE BOF:", e)
 
 def do_rnfr_rnto(ftp):
     old = input("RNFR file > ").strip()
     new = input("RNTO name > ").strip()
-    resp1 = ftp.sendcmd(f"RNFR {old}")
-    print(Fore.GREEN + "←", resp1)
-    resp2 = ftp.sendcmd(f"RNTO {new}")
-    print(Fore.GREEN + "←", resp2)
+    try:
+        r1 = ftp.sendcmd(f"RNFR {old}")
+        print(Fore.GREEN + "←", r1)
+        r2 = ftp.sendcmd(f"RNTO {new}")
+        print(Fore.GREEN + "←", r2)
+    except Exception as e:
+        print(Fore.RED + "× RNFR/RNTO fail:", e)
 
 def do_dele(ftp):
     fn = input("DELE file > ").strip()
-    resp = ftp.delete(fn)
-    print(Fore.GREEN + "←", resp)
+    try:
+        resp = ftp.delete(fn)
+        print(Fore.GREEN + "←", resp)
+    except Exception as e:
+        print(Fore.RED + "× DELE fail:", e)
 
 def do_mkd_rmd(ftp):
     d = input("MKD directory > ").strip()
-    print(Fore.GREEN + "←", ftp.mkd(d))
+    try:
+        resp = ftp.sendcmd(f"MKD {d}")
+        print(Fore.GREEN + "←", resp)
+    except Exception as e:
+        print(Fore.RED + "× MKD fail:", e)
     r = input("RMD directory > ").strip()
-    print(Fore.GREEN + "←", ftp.rmd(r))
+    try:
+        resp = ftp.sendcmd(f"RMD {r}")
+        print(Fore.GREEN + "←", resp)
+    except Exception as e:
+        print(Fore.RED + "× RMD fail:", e)
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", default=2121, type=int)
+    p.add_argument("--host", default="127.0.0.1", help="Honeypot IP")
+    p.add_argument("--port", default=2121, type=int, help="Port FTPS implicite")
     args = p.parse_args()
 
     ftp = None
@@ -140,23 +154,23 @@ def main():
         if cmd in ("1","2","3"):
             if ftp: ftp.close()
             ftp = make_ftps(args.host, args.port)
-            if cmd == "1": ok = do_login(ftp,"anonymous","")
-            elif cmd=="2": ok = do_login(ftp,"attacker","secret")
+            if cmd=="1": ok=do_login(ftp,"anonymous","")
+            elif cmd=="2": ok=do_login(ftp,"attacker","secret")
             else:
-                u = input("User > ").strip()
-                p = input("Pass > ").strip()
-                ok = do_login(ftp,u,p)
+                u=input("User > ").strip()
+                p=input("Pass > ").strip()
+                ok=do_login(ftp,u,p)
             if not ok:
-                ftp.close(); ftp = None
-        elif cmd=="4" and ftp:     do_nlst(ftp)
-        elif cmd=="5" and ftp:     do_retr(ftp)
-        elif cmd=="6" and ftp:     do_stor(ftp)
-        elif cmd=="7" and ftp:     do_cwd_traverse(ftp)
-        elif cmd=="8" and ftp:     do_site_exec(ftp)
-        elif cmd=="9" and ftp:     do_site_bof(ftp)
-        elif cmd=="10" and ftp:    do_rnfr_rnto(ftp)
-        elif cmd=="11" and ftp:    do_dele(ftp)
-        elif cmd=="12" and ftp:    do_mkd_rmd(ftp)
+                ftp.close(); ftp=None
+        elif cmd=="4"  and ftp: do_nlst(ftp)
+        elif cmd=="5"  and ftp: do_retr(ftp)
+        elif cmd=="6"  and ftp: do_stor(ftp)
+        elif cmd=="7"  and ftp: do_cwd_traverse(ftp)
+        elif cmd=="8"  and ftp: do_site_exec(ftp)
+        elif cmd=="9"  and ftp: do_site_bof(ftp)
+        elif cmd=="10" and ftp: do_rnfr_rnto(ftp)
+        elif cmd=="11" and ftp: do_dele(ftp)
+        elif cmd=="12" and ftp: do_mkd_rmd(ftp)
         elif cmd=="13":
             if ftp: ftp.close()
             print("Bye!"); break
