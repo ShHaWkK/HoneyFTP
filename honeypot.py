@@ -126,7 +126,7 @@ if not (os.path.exists(KEY_FILE) and os.path.exists(CRT_FILE)):
         f.write(cert.public_bytes(serialization.Encoding.PEM))
 
 # 6) Twisted & config
-from twisted.cred import portal, checkers
+from twisted.cred import portal, checkers, credentials, error
 from twisted.cred.checkers import AllowAnonymousAccess
 from twisted.internet import endpoints, reactor, ssl, defer
 from twisted.internet.protocol import DatagramProtocol
@@ -179,6 +179,19 @@ def create_honeytoken(ip: str, sess: str) -> str:
 # Port-knocking logic
 ftp_started = False
 knock_state = {}
+
+
+class DictChecker:
+    """Simple checker accepting plain username/password strings."""
+    credentialInterfaces = (credentials.IUsernamePassword,)
+
+    def __init__(self, users):
+        self.users = users
+
+    def requestAvatarId(self, creds):
+        if self.users.get(creds.username) == creds.password:
+            return defer.succeed(creds.username)
+        return defer.fail(error.UnauthorizedLogin())
 class KnockProtocol(DatagramProtocol):
     def __init__(self, port):
         self.port = port
@@ -202,7 +215,10 @@ def start_ftp():
     ftp_started = True
     realm = HoneyRealm(ROOT_DIR)
     p     = portal.Portal(realm)
-    p.registerChecker(checkers.InMemoryUsernamePasswordDatabaseDontUse(attacker="secret"))
+    # Use a simple dictionary-based checker so we can keep credentials as
+    # strings.  This avoids the byte-vs-str mismatch in Twisted's built-in
+    # checker which caused logins to fail.
+    p.registerChecker(DictChecker({"attacker": "secret"}))
     p.registerChecker(AllowAnonymousAccess())
     ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
     endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p))
@@ -256,8 +272,8 @@ class HoneyShell(ftp.FTPShell):
 
     def ftp_CWD(self, path):
         if path.startswith(".."):
-            fake = f"drwxr-xr-x   2 root root 4096 Jan 1 00:00 {path}"
-            return ftp.CMD_OK, f"250 Changed to {path}\nListing:\n{fake}"
+            self.logf.write(f"CWD {path}\n")
+            return ftp.REQ_FILE_ACTN_COMPLETED_OK,
         return super().ftp_CWD(path)
 
 # 8) Protocol
@@ -377,19 +393,23 @@ class HoneyFTP(ftp.FTP):
             self.logf.flush()
             try:
                 with open(self.logf.name) as f:
-                    data = f.read()[-1024:]
+                    lines = f.read().splitlines()[-50:]
             except Exception as e:
-                data = f"log error: {e}"
-            return ftp.CMD_OK, data
+                lines = [f"log error: {e}"]
+            self.sendLine("200-DEBUG START")
+            for l in lines:
+                self.sendLine(l)
+            self.sendLine("200 DEBUG END")
+            return
         if cmd=="SQLMAP":
             return ftp.CMD_OK, "SQLi simulation complete"
         if cmd=="BOF":
             if len(rest)>1000:
                 logging.warning("SIMUL BOF by %s len=%d", self.transport.getPeer().host, len(rest))
-                return ftp.CMD_ERR, "500 Buffer overflow!"
-            return ftp.CMD_OK, "SITE BOF OK"
+                return ftp.REQ_ACTN_ABRTD_LOCAL_ERR, "Buffer overflow!"
+            return ftp.CMD_OK,
         # Unknown SITE sub-command → syntax error
-        return ftp.CMD_SYNTAX_ERR, params
+        return ftp.SYNTAX_ERR, params
 
     def lineReceived(self, line):
         peer, cmd = self.transport.getPeer().host, line.decode("latin-1").strip()
