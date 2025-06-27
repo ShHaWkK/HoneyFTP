@@ -38,8 +38,8 @@ def do_nlst(ftp):
     try:
         files = ftp.nlst(".")
         print(Fore.CYAN + "← FILES:")
-        for f in files:
-            print("   •", f)
+        for i, f in enumerate(files, 1):
+            print(f"   {i:2d}. {f}")
     except Exception as e:
         print(Fore.RED + "× NLST error:", e)
 
@@ -49,9 +49,10 @@ def do_retr(ftp):
     dst = os.path.expanduser(dst)
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     try:
+        print(Fore.YELLOW + f"→ RETR {fn}")
         with open(dst,"wb") as f:
             ftp.retrbinary(f"RETR {fn}", f.write)
-        print(Fore.GREEN + f"✓ {fn} → {dst}")
+        print(Fore.GREEN + f"✓ saved to {dst}")
     except Exception as e:
         print(Fore.RED + "× RETR fail:", e)
 
