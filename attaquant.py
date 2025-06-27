@@ -53,8 +53,8 @@ def do_nlst(ftp):
         files = ftp.nlst(".")
         files = [f.lstrip("./") for f in files]
         print(Fore.CYAN + "← FILES:")
-        for fn in files:
-            print("   •", fn)
+        for i, fn in enumerate(files, 1):
+            print(Fore.CYAN + f"  {i:2d}) {fn}")
     except Exception as e:
         print(Fore.RED + "× NLST failed:", e)
 
@@ -68,6 +68,7 @@ def do_retr(ftp):
         with open(os.path.expanduser(out), "wb") as f:
             ftp.retrbinary(f"RETR {fn}", f.write)
         print(Fore.GREEN + f"✓ {fn} → {out}")
+        print(Fore.YELLOW + "(check the file for fake data if any)")
     except Exception as e:
         print(Fore.RED + "× RETR failed:", e)
 

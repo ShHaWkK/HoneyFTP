@@ -28,8 +28,9 @@ nohup python honeypot.py &
 ```
 
 The server listens on port `2121` by default and writes logs to `honeypot.log`.
-Set `HONEYFTP_PORT`, `SLACK_WEBHOOK` or `SMTP_SERVER` environment variables to
-enable alerts or change the port.
+Set `HONEYFTP_PORT` to change the port. You can also define `KNOCK_SEQ` (comma
+separated ports) to require a port-knock sequence before the honeypot starts.
+`SLACK_WEBHOOK` or `SMTP_SERVER` enable alerts.
 
 ## Deployment on Proxmox
 
@@ -45,7 +46,8 @@ enable alerts or change the port.
 4. Lancez le script en tâche de fond :
 
    ```bash
-   HONEYFTP_PORT=2121 SLACK_WEBHOOK=<url_webhook> nohup python honeypot.py &
+   HONEYFTP_PORT=2121 KNOCK_SEQ=1111,2222,3333 \
+   SLACK_WEBHOOK=<url_webhook> nohup python honeypot.py &
    ```
 
 Le service sera alors exposé sur le port choisi à l'intérieur de la VM ou du

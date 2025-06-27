@@ -15,7 +15,9 @@ Fonctionnalités :
 – MKD/RMD → alertes sur dirs “interdits”  
 – Brute-force throttling + tarpitting  
 – Détection Tor exit-nodes  
-– SITE EXEC/CHMOD/SHELL factices  
+– SITE EXEC/CHMOD/SHELL factices
+– SITE BOF/DEBUG/SQLMAP factices
+– Port-knocking optionnel
 – Logs centraux + par session
 """
 
@@ -83,6 +85,9 @@ for rel, content in {
 
 failed_attempts = {}
 dynamic_items   = []
+FAKE_FILES      = ["root.txt", "shadow.bak"]
+UPLOADS_DIR     = os.path.join(ROOT_DIR, "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 # 5) Génération du certificat TLS
 KEY_FILE = os.path.join(ROOT_DIR, "server.key")
@@ -125,6 +130,7 @@ from twisted.cred.checkers import AllowAnonymousAccess
 from twisted.internet import endpoints, reactor, ssl, defer
 from twisted.protocols import ftp
 from twisted.python import filepath
+from twisted.internet.protocol import Protocol, Factory
 
 TOR_LIST   = "https://check.torproject.org/torbulkexitlist"
 BRUTEF_THR = 5
@@ -133,6 +139,7 @@ CANARY     = {"passwords.txt","secrets/ssh_key"}
 FORBID     = {"secrets"}
 PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
 SLACK_URL  = os.getenv("SLACK_WEBHOOK")
+KNOCK_SEQ  = [int(p) for p in os.getenv("KNOCK_SEQ","" ).split(',') if p]
 SMTP_CFG   = (
     os.getenv("SMTP_SERVER"),
     int(os.getenv("SMTP_PORT","0")) or 25,
@@ -188,11 +195,27 @@ class HoneyShell(ftp.FTPShell):
         super().__init__(filepath.FilePath(ROOT_DIR))
         self.avatarId = avatar_id
 
+    def list(self, path, keys=()):
+        d = super().list(path, keys)
+        def inject(entries):
+            p = path
+            if p in (None, [], [''], ['.']):
+                for f in FAKE_FILES:
+                    entries.append((f, []))
+            return entries
+        return d.addCallback(inject)
+
     def openForReading(self, path):
         rel = "/".join(path)
         if rel in CANARY:
             alert(f"CANARY READ {rel} by {self.avatarId}")
         return super().openForReading(path)
+
+    def openForWriting(self, path):
+        rel = "/".join(path)
+        if not rel.startswith("uploads/"):
+            rel = os.path.join("uploads", rel)
+        return super().openForWriting(rel.split("/"))
 
 # 8) Protocole avec pièges
 class HoneyFTP(ftp.FTP):
@@ -311,6 +334,12 @@ class HoneyFTP(ftp.FTP):
         except Exception as e:
             return (ftp.FILE_UNAVAILABLE, f"RMD failed: {e}")
 
+    def ftp_CWD(self, path):
+        if path.startswith("../"):
+            self.logf.write(f"CWD {path} (traversal)\n")
+            return (ftp.CMD_OK, "CWD successful")
+        return super().ftp_CWD(path)
+
     def ftp_RETR(self, path):
         rel  = path.lstrip("/")
         peer = self.transport.getPeer().host
@@ -318,16 +347,25 @@ class HoneyFTP(ftp.FTP):
             alert(f"CANARY RETR {rel} by {peer}")
         if rel == getattr(self, "token", None):
             logging.info("HONEYTOKEN DL %s session=%s", rel, self.session)
+        if rel in FAKE_FILES:
+            self.logf.write(f"RETR {rel} (fake)\n")
+            return (ftp.CMD_OK, f"Contents of {rel}...")
         self.logf.write(f"RETR {rel}\n")
         return super().ftp_RETR(path)
 
     def ftp_SITE(self, params):
-        cmd = params.strip().split()[0].upper()
-        return {
-            "EXEC":  (ftp.CMD_OK, "EXEC disabled"),
+        parts = params.strip().split(None, 1)
+        cmd = parts[0].upper() if parts else ""
+        arg = parts[1] if len(parts) > 1 else ""
+        table = {
+            "EXEC":  (ftp.CMD_OK, f"Fake exec: {arg}"),
             "CHMOD": (ftp.CMD_OK, "CHMOD ignored"),
             "SHELL": (ftp.CMD_OK, "SHELL unavailable"),
-        }.get(cmd, (ftp.SYNTAX_ERR, params))
+            "BOF":   (ftp.CMD_OK, "Segmentation fault (simulated)"),
+            "DEBUG": (ftp.CMD_OK, open(self.logf.name).read()[-200:]),
+            "SQLMAP": (ftp.CMD_OK, "Injection failed: 0 rows"),
+        }
+        return table.get(cmd, (ftp.SYNTAX_ERR, params))
 
     def lineReceived(self, line):
         peer = self.transport.getPeer().host
@@ -348,8 +386,8 @@ class HoneyFTPFactory(ftp.FTPFactory):
 
 class HoneyRealm(ftp.FTPRealm):
     def __init__(self, root: str):
-        # <-- on passe root (str), pas FilePath
-        super().__init__(root)
+        # root doit être converti en FilePath
+        super().__init__(filepath.FilePath(root))
 
     def avatarForAnonymousUser(self):
         return HoneyShell("anonymous")
@@ -368,8 +406,42 @@ def main():
     p.registerChecker(AllowAnonymousAccess())
 
     ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
-    endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p))
-    logging.info("Honeypot FTPS listening on port %s", PORT)
+
+    def start_ftp():
+        if getattr(start_ftp, "started", False):
+            return
+        start_ftp.started = True
+        endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p))
+        logging.info("Honeypot FTPS listening on port %s", PORT)
+        logging.info("Verify firewall allows traffic on %s", PORT)
+
+    if KNOCK_SEQ:
+        knocks = {}
+
+        class KnockProtocol(Protocol):
+            def connectionMade(self):
+                ip = self.transport.getPeer().host
+                idx, last = knocks.get(ip, (0, reactor.seconds()))
+                if reactor.seconds() - last > 5:
+                    idx = 0
+                port = self.factory.port
+                if port == KNOCK_SEQ[idx]:
+                    idx += 1
+                    if idx == len(KNOCK_SEQ):
+                        start_ftp()
+                        idx = 0
+                else:
+                    idx = 1 if port == KNOCK_SEQ[0] else 0
+                knocks[ip] = (idx, reactor.seconds())
+                self.transport.loseConnection()
+
+        for kp in KNOCK_SEQ:
+            f = Factory(); f.protocol = KnockProtocol; f.port = kp
+            reactor.listenTCP(kp, f)
+        logging.info("Waiting for knock sequence %s", KNOCK_SEQ)
+    else:
+        start_ftp()
+
     reactor.run()
 
 if __name__ == "__main__":
