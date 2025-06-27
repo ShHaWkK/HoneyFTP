@@ -405,7 +405,10 @@ class HoneyFTPFactory(ftp.FTPFactory):
 
 class HoneyRealm(ftp.FTPRealm):
     def __init__(self, root: str):
-        super().__init__(filepath.FilePath(root))
+        # FTPRealm expects a plain path string. Passing a FilePath object
+        # causes "TypeError: expected str, bytes or os.PathLike object" on
+        # startup. Keep the original string here and let FTPRealm convert it.
+        super().__init__(root)
     def avatarForAnonymousUser(self):
         return HoneyShell("anonymous")
     def avatarForUsername(self, username: str):
