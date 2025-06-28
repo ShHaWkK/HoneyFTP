@@ -60,6 +60,7 @@ def make_ftps(host, port, retries=3):
     ftp.sock = ss
     ftp.file = ss.makefile('r', encoding='utf-8', newline='\r\n')
     ftp.af = ss.family
+    ftp.host = host
     ftp.passiveserver = True
     banner = ftp.getresp().strip()
     print(Fore.YELLOW + "← Bannière :", banner)

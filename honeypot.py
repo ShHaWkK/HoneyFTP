@@ -221,6 +221,9 @@ def start_ftp():
     p.registerChecker(DictChecker({"attacker": "secret"}))
     p.registerChecker(AllowAnonymousAccess())
     ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
+    def _listen_ssl(port, factory, *a, **kw):
+        return reactor.listenSSL(port, factory, ctx, *a, **kw)
+    HoneyFTP.listenFactory = staticmethod(_listen_ssl)
     endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p))
     logging.info("Honeypot FTPS listening on port %s", PORT)
 
@@ -410,6 +413,20 @@ class HoneyFTP(ftp.FTP):
             return ftp.CMD_OK,
         # Unknown SITE sub-command → syntax error
         return ftp.SYNTAX_ERR, params
+
+    def ftp_PBSZ(self, param):
+        """Handle RFC 4217 PBSZ command used by FTPS clients."""
+        self.sendLine("200 PBSZ=0")
+        return
+
+    def ftp_PROT(self, param):
+        """Acknowledge PROT command without altering connections."""
+        level = (param or "").strip().upper()
+        if level == "P":
+            self.sendLine("200 Protection level set to Private")
+        else:
+            self.sendLine("200 Protection level ignored")
+        return
 
     def lineReceived(self, line):
         peer, cmd = self.transport.getPeer().host, line.decode("latin-1").strip()
