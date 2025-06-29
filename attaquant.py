@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Attacker Implicit-FTPS — Menu interactif (19 options)
+Attacker Implicit-FTPS — Menu interactif (21 options)
 
 Ce client offre un ensemble de commandes unitaires pour tester le honeypot FTPS
 mais aussi quelques scripts prédéfinis qui enchaînent plusieurs actions.
@@ -33,8 +33,7 @@ REPORT_FILE = "session_report.txt"
 
 
 def do_knock(host, port=2121):
-    """Envoie la séquence de port-knocking UDP 4020, 4021, 4022 et
-    vérifie que le service FTPS répond."""
+    """Envoie la séquence de port-knocking UDP 4020, 4021, 4022 et vérifie l'accès FTPS."""
     print(Fore.MAGENTA + "→ Envoi du port-knock sequence…")
     for p in (4020, 4021, 4022):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -69,6 +68,7 @@ def make_ftps(host, port, retries=3):
     print(Fore.YELLOW + "← Bannière :", banner)
     return ftp
 
+
 def check_access(host, port):
     """Tente une connexion rapide pour confirmer l'accès FTPS."""
     try:
@@ -98,7 +98,7 @@ def do_login(ftp, user, pwd):
 
 def do_nlst(ftp):
     try:
-        files = ftp.nlst(".")
+        files = ftp.nlst('.')
         print(Fore.CYAN + "← FILES:")
         for i, f in enumerate(files, 1):
             print(f"   {i:2d}. {f}")
@@ -110,10 +110,10 @@ def do_retr(ftp):
     fn = input("Fichier à RETR > ").strip()
     dst = input("Local dest (~/...) > ").strip() or fn
     dst = os.path.expanduser(dst)
-    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(dst) or '.', exist_ok=True)
     try:
         print(Fore.YELLOW + f"→ RETR {fn}")
-        with open(dst, "wb") as f:
+        with open(dst, 'wb') as f:
             ftp.retrbinary(f"RETR {fn}", f.write)
         print(Fore.GREEN + f"✓ saved to {dst}")
     except Exception as e:
@@ -128,7 +128,7 @@ def do_stor(ftp):
         return
     remote = input("Remote name > ").strip() or os.path.basename(src)
     try:
-        with open(src, "rb") as f:
+        with open(src, 'rb') as f:
             ftp.storbinary(f"STOR {remote}", f)
         print(Fore.GREEN + f"✓ Uploaded {src} → /{remote}")
     except Exception as e:
@@ -137,8 +137,8 @@ def do_stor(ftp):
 
 def do_cwd_traverse(ftp):
     try:
-        resp = ftp.sendcmd("CWD ../..")
-        print(Fore.GREEN + "←", resp.replace("\r", ""))
+        resp = ftp.sendcmd('CWD ../..')
+        print(Fore.GREEN + "←", resp.replace('\r', ''))
     except Exception as e:
         print(Fore.RED + "× CWD fail:", e)
 
@@ -153,20 +153,18 @@ def do_site_exec(ftp):
 
 
 def do_site_bof(ftp):
-    length = int(input("Taille payload > ").strip() or "1024")
-    payload = "A" * length
+    length = int(input("Taille payload > ").strip() or '1024')
+    payload = 'A' * length
     try:
         resp = ftp.sendcmd(f"SITE BOF {payload}")
-        # tronque l’affichage à 200 caractères
-        end = "…" if len(resp) > 200 else ""
-        print(Fore.GREEN + "←", resp[:200] + end)
+        print(Fore.GREEN + "←", resp[:200] + ('…' if len(resp) > 200 else ''))
     except Exception as e:
         print(Fore.RED + "× SITE BOF fail:", e)
 
 
 def do_site_help(ftp):
     try:
-        resp = ftp.sendcmd("SITE HELP")
+        resp = ftp.sendcmd('SITE HELP')
         print(Fore.GREEN + "←", resp)
     except Exception as e:
         print(Fore.RED + "× SITE HELP fail:", e)
@@ -174,7 +172,7 @@ def do_site_help(ftp):
 
 def do_site_version(ftp):
     try:
-        resp = ftp.sendcmd("SITE VERSION")
+        resp = ftp.sendcmd('SITE VERSION')
         print(Fore.GREEN + "←", resp)
     except Exception as e:
         print(Fore.RED + "× SITE VERSION fail:", e)
@@ -182,7 +180,7 @@ def do_site_version(ftp):
 
 def do_site_getlog(ftp):
     sess = input("Session ID (blank for global) > ").strip()
-    cmd = f"SITE GETLOG {sess}" if sess else "SITE GETLOG"
+    cmd = f"SITE GETLOG {sess}" if sess else 'SITE GETLOG'
     try:
         ftp.putcmd(cmd)
         resp = ftp.getmultiline()
@@ -190,8 +188,10 @@ def do_site_getlog(ftp):
         print(Fore.RED + "× SITE GETLOG fail:", e)
         return
     lines = resp.splitlines()
-    if lines and lines[0].startswith("200-"): lines = lines[1:]
-    if lines and lines[-1].startswith("200"): lines = lines[:-1]
+    if lines and lines[0].startswith('200-'):
+        lines = lines[1:]
+    if lines and lines[-1].startswith('200'):
+        lines = lines[:-1]
     for l in lines:
         print(l)
 
@@ -200,10 +200,8 @@ def do_rnfr_rnto(ftp):
     old = input("RNFR file > ").strip()
     new = input("RNTO name > ").strip()
     try:
-        r1 = ftp.sendcmd(f"RNFR {old}")
-        print(Fore.GREEN + "←", r1)
-        r2 = ftp.sendcmd(f"RNTO {new}")
-        print(Fore.GREEN + "←", r2)
+        print(Fore.GREEN + "←", ftp.sendcmd(f"RNFR {old}"))
+        print(Fore.GREEN + "←", ftp.sendcmd(f"RNTO {new}"))
     except Exception as e:
         print(Fore.RED + "× RNFR/RNTO fail:", e)
 
@@ -220,14 +218,12 @@ def do_dele(ftp):
 def do_mkd_rmd(ftp):
     d = input("MKD directory > ").strip()
     try:
-        resp = ftp.sendcmd(f"MKD {d}")
-        print(Fore.GREEN + "←", resp)
+        print(Fore.GREEN + "←", ftp.sendcmd(f"MKD {d}"))
     except Exception as e:
         print(Fore.RED + "× MKD fail:", e)
     r = input("RMD directory > ").strip()
     try:
-        resp = ftp.sendcmd(f"RMD {r}")
-        print(Fore.GREEN + "←", resp)
+        print(Fore.GREEN + "←", ftp.sendcmd(f"RMD {r}"))
     except Exception as e:
         print(Fore.RED + "× RMD fail:", e)
 
@@ -235,25 +231,24 @@ def do_mkd_rmd(ftp):
 def fetch_report(ftp):
     """Récupère le log de session via ``SITE DEBUG`` et génère un rapport."""
     try:
-        ftp.putcmd("SITE DEBUG")
+        ftp.putcmd('SITE DEBUG')
         resp = ftp.getmultiline()
     except Exception as e:
         print(Fore.RED + "× DEBUG fail:", e)
         return
     lines = resp.splitlines()
-    if lines and lines[0].startswith("200-"):
+    if lines and lines[0].startswith('200-'):
         lines = lines[1:]
-    if lines and lines[-1].startswith("200"):
+    if lines and lines[-1].startswith('200'):
         lines = lines[:-1]
-    data = "\n".join(lines).strip()
+    data = '\n'.join(lines).strip()
     try:
-        with open(REPORT_FILE, "w") as f:
-            f.write(data + "\n")
+        with open(REPORT_FILE, 'w') as f:
+            f.write(data + '\n')
     except Exception as e:
         print(Fore.RED + "× Write report fail:", e)
         return
-    lines = [l for l in data.splitlines() if l]
-    downloads = [l[5:] for l in lines if l.startswith("RETR ")]
+    downloads = [l[5:] for l in lines if l.startswith('RETR ')]
     print(Fore.GREEN + f"✓ Rapport sauvegardé dans {REPORT_FILE}")
     if lines:
         print(Fore.CYAN + "Commandes enregistrées:")
@@ -270,7 +265,7 @@ def script_enum(host, port):
     if not unlocked:
         do_knock(host, port)
     ftp = make_ftps(host, port)
-    if not do_login(ftp, "anonymous", ""):
+    if not do_login(ftp, 'anonymous', ''):
         ftp.quit()
         return
     do_nlst(ftp)
@@ -284,16 +279,16 @@ def script_attack(host, port):
     if not unlocked:
         do_knock(host, port)
     ftp = make_ftps(host, port)
-    if not do_login(ftp, "attacker", "secret"):
+    if not do_login(ftp, 'attacker', 'secret'):
         ftp.quit()
         return
     do_nlst(ftp)
-    tmp = os.path.join(os.path.dirname(__file__), "exploit.txt")
-    with open(tmp, "w") as f:
-        f.write("exploit")
+    tmp = os.path.join(os.path.dirname(__file__), 'exploit.txt')
+    with open(tmp, 'w') as f:
+        f.write('exploit')
     try:
-        with open(tmp, "rb") as f:
-            ftp.storbinary("STOR exploit.txt", f)
+        with open(tmp, 'rb') as f:
+            ftp.storbinary('STOR exploit.txt', f)
         print(Fore.GREEN + "✓ Uploaded exploit.txt")
     finally:
         try:
@@ -301,12 +296,12 @@ def script_attack(host, port):
         except OSError:
             pass
     try:
-        ftp.retrbinary("RETR root.txt", lambda b: None)
+        ftp.retrbinary('RETR root.txt', lambda b: None)
         print(Fore.GREEN + "✓ RETR root.txt")
     except Exception as e:
         print(Fore.RED + "× RETR root.txt:", e)
     try:
-        ftp.sendcmd("SITE EXEC id")
+        ftp.sendcmd('SITE EXEC id')
     except Exception:
         pass
     fetch_report(ftp)
@@ -318,10 +313,10 @@ def script_replay(host, port):
     if not unlocked:
         do_knock(host, port)
     ftp = make_ftps(host, port)
-    if not do_login(ftp, "anonymous", ""):
+    if not do_login(ftp, 'anonymous', ''):
         ftp.quit()
         return
-    path = input("Fichier de commandes > ").strip() or "replay.txt"
+    path = input("Fichier de commandes > ").strip() or 'replay.txt'
     try:
         with open(path) as f:
             cmds = [l.strip() for l in f if l.strip()]
@@ -335,7 +330,7 @@ def script_replay(host, port):
             resp = ftp.sendcmd(c)
             print(Fore.GREEN + "←", resp)
         except Exception as e:
-            print(Fore.RED + "×", c, ":", e)
+            print(Fore.RED + f"× {c} : {e}")
     ftp.quit()
 
 
@@ -348,92 +343,89 @@ def main():
     ftp = None
     while True:
         status = "UNLOCKED" if unlocked else "LOCKED"
-        print(Fore.YELLOW + f"=== Attacker Implicit-FTPS Menu ({status}) ===")
+        print(Fore.YELLOW + f"=== Menu Attacker Implicit-FTPS ({status}) ===")
         print("""
 0) Knock sequence (unlock FTPS)
 1) anonymous/""
-2) NLST
-3) RETR
-4) STOR
-5) CWD ../..
-6) SITE EXEC /bin/bash
-7) SITE BOF payload
-
-8) SITE HELP
-9) SITE VERSION
-10) SITE GETLOG
-11) RNFR/RNTO
-12) DELE
-13) MKD/RMD
-14) Session report
-15) Script reconnaissance
-16) Script attaque
-17) Replay commands
-18) Quitter
-=======
-8) RNFR/RNTO
-9) DELE
-10) MKD/RMD
-11) Session report
-12) Script reconnaissance
-13) Script attaque
-14) Quitter
+2) attacker/secret
+3) custom login
+4) NLST
+5) RETR
+6) STOR
+7) CWD ../..
+8) SITE EXEC /bin/bash
+9) SITE BOF payload
+10) SITE HELP
+11) SITE VERSION
+12) SITE GETLOG
+13) RNFR/RNTO
+14) DELE
+15) MKD/RMD
+16) Session report
+17) Script reconnaissance
+18) Script attaque
+19) Replay commands
+20) Quitter
 """)
         cmd = input("Votre choix > ").strip()
+
         if cmd == "0":
             do_knock(args.host, args.port)
-            continue
-
-        if cmd == "1":
-            if not unlocked:
-                do_knock(args.host, args.port)
-            if ftp:
-                try: ftp.quit()
-                except: pass
+        elif cmd == "1":
+            if not unlocked: do_knock(args.host, args.port)
+            if ftp: try: ftp.quit() except: pass
             ftp = make_ftps(args.host, args.port)
-            ok = do_login(ftp, "anonymous", "")
-            if not ok:
-                try: ftp.close()
-                except: pass
+            if not do_login(ftp, 'anonymous', ''):
                 ftp = None
-
-        elif cmd == "2"  and ftp: do_nlst(ftp)
-        elif cmd == "3"  and ftp: do_retr(ftp)
-        elif cmd == "4"  and ftp: do_stor(ftp)
-        elif cmd == "5"  and ftp: do_cwd_traverse(ftp)
-        elif cmd == "6"  and ftp: do_site_exec(ftp)
-        elif cmd == "7"  and ftp: do_site_bof(ftp)
-        elif cmd == "8"  and ftp: do_site_help(ftp)
-        elif cmd == "9"  and ftp: do_site_version(ftp)
-        elif cmd == "10" and ftp: do_site_getlog(ftp)
-        elif cmd == "11" and ftp: do_rnfr_rnto(ftp)
-        elif cmd == "12" and ftp: do_dele(ftp)
-        elif cmd == "13" and ftp: do_mkd_rmd(ftp)
-        elif cmd == "14" and ftp: fetch_report(ftp)
-        elif cmd == "15":
-            script_enum(args.host, args.port)
-        elif cmd == "16":
-        elif cmd == "8"  and ftp: do_rnfr_rnto(ftp)
-        elif cmd == "9"  and ftp: do_dele(ftp)
-        elif cmd == "10" and ftp: do_mkd_rmd(ftp)
-        elif cmd == "11" and ftp: fetch_report(ftp)
-        elif cmd == "12":
-            script_enum(args.host, args.port)
-        elif cmd == "13":
-            script_attack(args.host, args.port)
+        elif cmd == "2":
+            if not unlocked: do_knock(args.host, args.port)
+            if ftp: try: ftp.quit() except: pass
+            ftp = make_ftps(args.host, args.port)
+            if not do_login(ftp, 'attacker', 'secret'):
+                ftp = None
+        elif cmd == "3" and ftp:
+            u = input("User > ").strip()
+            pw = input("Pass > ").strip()
+            do_login(ftp, u, pw)
+        elif cmd == "4" and ftp:
+            do_nlst(ftp)
+        elif cmd == "5" and ftp:
+            do_retr(ftp)
+        elif cmd == "6" and ftp:
+            do_stor(ftp)
+        elif cmd == "7" and ftp:
+            do_cwd_traverse(ftp)
+        elif cmd == "8" and ftp:
+            do_site_exec(ftp)
+        elif cmd == "9" and ftp:
+            do_site_bof(ftp)
+        elif cmd == "10" and ftp:
+            do_site_help(ftp)
+        elif cmd == "11" and ftp:
+            do_site_version(ftp)
+        elif cmd == "12" and ftp:
+            do_site_getlog(ftp)
+        elif cmd == "13" and ftp:
+            do_rnfr_rnto(ftp)
+        elif cmd == "14" and ftp:
+            do_dele(ftp)
+        elif cmd == "15" and ftp:
+            do_mkd_rmd(ftp)
+        elif cmd == "16" and ftp:
+            fetch_report(ftp)
         elif cmd == "17":
-            script_replay(args.host, args.port)
-
+            script_enum(args.host, args.port)
         elif cmd == "18":
-        elif cmd == "14":
-            if ftp:
-                try: ftp.quit()
-                except: pass
+            script_attack(args.host, args.port)
+        elif cmd == "19":
+            script_replay(args.host, args.port)
+        elif cmd == "20":
+            if ftp: try: ftp.quit() except: pass
             print("Bye !")
             break
-
         else:
-            print("→ Choix invalide ou pas de connexion active.")
+            print(Fore.RED + "→ Choix invalide ou pas de connexion active.")
+
 
 if __name__ == "__main__":
     main()
