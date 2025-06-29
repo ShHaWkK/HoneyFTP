@@ -372,14 +372,24 @@ def main():
         if cmd == "0":
             do_knock(args.host, args.port)
         elif cmd == "1":
-            if not unlocked: do_knock(args.host, args.port)
-            if ftp: try: ftp.quit() except: pass
+            if not unlocked:
+                do_knock(args.host, args.port)
+            if ftp:
+                try:
+                    ftp.quit()
+                except:
+                    pass
             ftp = make_ftps(args.host, args.port)
             if not do_login(ftp, 'anonymous', ''):
                 ftp = None
         elif cmd == "2":
-            if not unlocked: do_knock(args.host, args.port)
-            if ftp: try: ftp.quit() except: pass
+            if not unlocked:
+                do_knock(host=args.host, port=args.port)
+            if ftp:
+                try:
+                    ftp.quit()
+                except:
+                    pass
             ftp = make_ftps(args.host, args.port)
             if not do_login(ftp, 'attacker', 'secret'):
                 ftp = None
@@ -420,12 +430,15 @@ def main():
         elif cmd == "19":
             script_replay(args.host, args.port)
         elif cmd == "20":
-            if ftp: try: ftp.quit() except: pass
+            if ftp:
+                try:
+                    ftp.quit()
+                except:
+                    pass
             print("Bye !")
             break
         else:
             print(Fore.RED + "→ Choix invalide ou pas de connexion active.")
-
 
 if __name__ == "__main__":
     main()
