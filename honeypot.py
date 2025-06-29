@@ -224,8 +224,12 @@ def start_ftp():
     def _listen_ssl(port, factory, *a, **kw):
         return reactor.listenSSL(port, factory, ctx, *a, **kw)
     HoneyFTP.listenFactory = staticmethod(_listen_ssl)
-    HoneyFTP.passivePortRange = range(60000, 60100)
-    endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p, ctx))
+    port_range = range(60000, 60100)
+    HoneyFTP.passivePortRange = port_range
+    HoneyFTPFactory.passivePortRange = port_range
+    factory = HoneyFTPFactory(p, ctx)
+    factory.passivePortRange = port_range
+    endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(factory)
     logging.info("Honeypot FTPS listening on port %s", PORT)
 
 def randomize_fs(max_dirs=3, max_files=2, max_total=50):

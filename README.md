@@ -40,6 +40,10 @@ Ensure the port is open in your firewall:
 sudo ufw allow 2121/tcp
 ```
 
+Data connections use a passive range of **60000‑60100**. If those ports are
+blocked, commands like `NLST` or `RETR` will hang with a timeout. Make sure the
+range is reachable, especially when testing locally with the attacker script.
+
 ## Deployment on Proxmox
 
 1. Créez un conteneur ou une VM Debian/Ubuntu sur votre hôte Proxmox.

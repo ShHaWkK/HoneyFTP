@@ -1,0 +1,4 @@
+__pycache__/
+virtual_fs/
+sessions/
+*.log
