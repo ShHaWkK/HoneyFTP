@@ -89,26 +89,24 @@ différentes commandes FTPS. Lancez-le ainsi :
 python attaquant.py --host <ip> --port 2121
 ```
 
-Le menu interactif accepte les valeurs **0 à 15** :
+Le menu interactif accepte les valeurs **0 à 14** :
 
 | Choix | Action |
 |------:|--------|
 |0|Envoyer la séquence de knock et tester la connexion|
 |1|Connexion anonyme|
-|2|Connexion `attacker`/`secret`|
-|3|Connexion avec des identifiants personnalisés|
-|4|`NLST` – liste des fichiers|
-|5|`RETR` – télécharger un fichier|
-|6|`STOR` – téléverser un fichier|
-|7|`CWD ../..` – tentative de traversal|
-|8|`SITE EXEC` – commande shell|
-|9|`SITE BOF` – payload overflow|
-|10|`RNFR`/`RNTO` – renommage|
-|11|`DELE` – suppression|
-|12|`MKD`/`RMD` – gestion de répertoires|
-|13|Récupérer le journal de session|
-|14|Script de reconnaissance automatisé|
-|15|Script d'attaque automatisé|
+|2|`NLST` – liste des fichiers|
+|3|`RETR` – télécharger un fichier|
+|4|`STOR` – téléverser un fichier|
+|5|`CWD ../..` – tentative de traversal|
+|6|`SITE EXEC` – commande shell|
+|7|`SITE BOF` – payload overflow|
+|8|`RNFR`/`RNTO` – renommage|
+|9|`DELE` – suppression|
+|10|`MKD`/`RMD` – gestion de répertoires|
+|11|Récupérer le journal de session|
+|12|Script de reconnaissance automatisé|
+|13|Script d'attaque automatisé|
 
-L'option `16` quitte le client.
+L'option `14` quitte le client.
 
