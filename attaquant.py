@@ -294,63 +294,54 @@ def main():
         print("""
 0) Knock sequence (unlock FTPS)
 1) anonymous/""
-2) attacker/secret
-3) custom
- 4) NLST
- 5) RETR
- 6) STOR
- 7) CWD ../..
- 8) SITE EXEC /bin/bash
- 9) SITE BOF payload
-10) RNFR/RNTO
-11) DELE
-12) MKD/RMD
-13) Session report
-14) Script reconnaissance
-15) Script attaque
-16) Quitter
+2) NLST
+3) RETR
+4) STOR
+5) CWD ../..
+6) SITE EXEC /bin/bash
+7) SITE BOF payload
+8) RNFR/RNTO
+9) DELE
+10) MKD/RMD
+11) Session report
+12) Script reconnaissance
+13) Script attaque
+14) Quitter
 """)
         cmd = input("Votre choix > ").strip()
         if cmd == "0":
             do_knock(args.host, args.port)
             continue
 
-        if cmd in ("1", "2", "3"):
+        if cmd == "1":
             if not unlocked:
                 do_knock(args.host, args.port)
             if ftp:
                 try: ftp.quit()
                 except: pass
             ftp = make_ftps(args.host, args.port)
-            if cmd == "1":
-                ok = do_login(ftp, "anonymous", "")
-            elif cmd == "2":
-                ok = do_login(ftp, "attacker", "secret")
-            else:
-                u = input("User > ").strip()
-                pw = input("Pass > ").strip()
-                ok = do_login(ftp, u, pw)
+            ok = do_login(ftp, "anonymous", "")
             if not ok:
                 try: ftp.close()
                 except: pass
                 ftp = None
 
-        elif cmd == "4"  and ftp: do_nlst(ftp)
-        elif cmd == "5"  and ftp: do_retr(ftp)
-        elif cmd == "6"  and ftp: do_stor(ftp)
-        elif cmd == "7"  and ftp: do_cwd_traverse(ftp)
-        elif cmd == "8"  and ftp: do_site_exec(ftp)
-        elif cmd == "9"  and ftp: do_site_bof(ftp)
-        elif cmd == "10" and ftp: do_rnfr_rnto(ftp)
-        elif cmd == "11" and ftp: do_dele(ftp)
-        elif cmd == "12" and ftp: do_mkd_rmd(ftp)
-        elif cmd == "13" and ftp: fetch_report(ftp)
-        elif cmd == "14":
+        elif cmd == "2"  and ftp: do_nlst(ftp)
+        elif cmd == "3"  and ftp: do_retr(ftp)
+        elif cmd == "4"  and ftp: do_stor(ftp)
+        elif cmd == "5"  and ftp: do_cwd_traverse(ftp)
+        elif cmd == "6"  and ftp: do_site_exec(ftp)
+        elif cmd == "7"  and ftp: do_site_bof(ftp)
+        elif cmd == "8"  and ftp: do_rnfr_rnto(ftp)
+        elif cmd == "9"  and ftp: do_dele(ftp)
+        elif cmd == "10" and ftp: do_mkd_rmd(ftp)
+        elif cmd == "11" and ftp: fetch_report(ftp)
+        elif cmd == "12":
             script_enum(args.host, args.port)
-        elif cmd == "15":
+        elif cmd == "13":
             script_attack(args.host, args.port)
 
-        elif cmd == "16":
+        elif cmd == "14":
             if ftp:
                 try: ftp.quit()
                 except: pass
