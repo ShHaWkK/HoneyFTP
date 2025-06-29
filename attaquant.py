@@ -358,6 +358,7 @@ def main():
 5) CWD ../..
 6) SITE EXEC /bin/bash
 7) SITE BOF payload
+
 8) SITE HELP
 9) SITE VERSION
 10) SITE GETLOG
@@ -369,6 +370,14 @@ def main():
 16) Script attaque
 17) Replay commands
 18) Quitter
+=======
+8) RNFR/RNTO
+9) DELE
+10) MKD/RMD
+11) Session report
+12) Script reconnaissance
+13) Script attaque
+14) Quitter
 """)
         cmd = input("Votre choix > ").strip()
         if cmd == "0":
@@ -404,11 +413,19 @@ def main():
         elif cmd == "15":
             script_enum(args.host, args.port)
         elif cmd == "16":
+        elif cmd == "8"  and ftp: do_rnfr_rnto(ftp)
+        elif cmd == "9"  and ftp: do_dele(ftp)
+        elif cmd == "10" and ftp: do_mkd_rmd(ftp)
+        elif cmd == "11" and ftp: fetch_report(ftp)
+        elif cmd == "12":
+            script_enum(args.host, args.port)
+        elif cmd == "13":
             script_attack(args.host, args.port)
         elif cmd == "17":
             script_replay(args.host, args.port)
 
         elif cmd == "18":
+        elif cmd == "14":
             if ftp:
                 try: ftp.quit()
                 except: pass

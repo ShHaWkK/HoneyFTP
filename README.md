@@ -91,6 +91,7 @@ python attaquant.py --host <ip> --port 2121
 
 Le menu interactif accepte les valeurs **0 à 18** :
 
+
 | Choix | Action |
 |------:|--------|
 |0|Envoyer la séquence de knock et tester la connexion|
@@ -113,4 +114,14 @@ Le menu interactif accepte les valeurs **0 à 18** :
 |17|Rejouer une liste de commandes|
 
 L'option `18` quitte le client.
+=======
+|8|`RNFR`/`RNTO` – renommage|
+|9|`DELE` – suppression|
+|10|`MKD`/`RMD` – gestion de répertoires|
+|11|Récupérer le journal de session|
+|12|Script de reconnaissance automatisé|
+|13|Script d'attaque automatisé|
+
+L'option `14` quitte le client.
+
 
