@@ -89,7 +89,8 @@ différentes commandes FTPS. Lancez-le ainsi :
 python attaquant.py --host <ip> --port 2121
 ```
 
-Le menu interactif accepte les valeurs **0 à 14** :
+Le menu interactif accepte les valeurs **0 à 18** :
+
 
 | Choix | Action |
 |------:|--------|
@@ -101,6 +102,19 @@ Le menu interactif accepte les valeurs **0 à 14** :
 |5|`CWD ../..` – tentative de traversal|
 |6|`SITE EXEC` – commande shell|
 |7|`SITE BOF` – payload overflow|
+|8|`SITE HELP` – liste des sous-commandes|
+|9|`SITE VERSION` – version du serveur|
+|10|`SITE GETLOG` – extraire un log|
+|11|`RNFR`/`RNTO` – renommage|
+|12|`DELE` – suppression|
+|13|`MKD`/`RMD` – gestion de répertoires|
+|14|Récupérer le journal de session|
+|15|Script de reconnaissance automatisé|
+|16|Script d'attaque automatisé|
+|17|Rejouer une liste de commandes|
+
+L'option `18` quitte le client.
+=======
 |8|`RNFR`/`RNTO` – renommage|
 |9|`DELE` – suppression|
 |10|`MKD`/`RMD` – gestion de répertoires|
@@ -109,4 +123,5 @@ Le menu interactif accepte les valeurs **0 à 14** :
 |13|Script d'attaque automatisé|
 
 L'option `14` quitte le client.
+
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Attacker Implicit-FTPS — Menu interactif (17 options)
+Attacker Implicit-FTPS — Menu interactif (19 options)
 
 Ce client offre un ensemble de commandes unitaires pour tester le honeypot FTPS
 mais aussi quelques scripts prédéfinis qui enchaînent plusieurs actions.
@@ -164,6 +164,38 @@ def do_site_bof(ftp):
         print(Fore.RED + "× SITE BOF fail:", e)
 
 
+def do_site_help(ftp):
+    try:
+        resp = ftp.sendcmd("SITE HELP")
+        print(Fore.GREEN + "←", resp)
+    except Exception as e:
+        print(Fore.RED + "× SITE HELP fail:", e)
+
+
+def do_site_version(ftp):
+    try:
+        resp = ftp.sendcmd("SITE VERSION")
+        print(Fore.GREEN + "←", resp)
+    except Exception as e:
+        print(Fore.RED + "× SITE VERSION fail:", e)
+
+
+def do_site_getlog(ftp):
+    sess = input("Session ID (blank for global) > ").strip()
+    cmd = f"SITE GETLOG {sess}" if sess else "SITE GETLOG"
+    try:
+        ftp.putcmd(cmd)
+        resp = ftp.getmultiline()
+    except Exception as e:
+        print(Fore.RED + "× SITE GETLOG fail:", e)
+        return
+    lines = resp.splitlines()
+    if lines and lines[0].startswith("200-"): lines = lines[1:]
+    if lines and lines[-1].startswith("200"): lines = lines[:-1]
+    for l in lines:
+        print(l)
+
+
 def do_rnfr_rnto(ftp):
     old = input("RNFR file > ").strip()
     new = input("RNTO name > ").strip()
@@ -281,6 +313,32 @@ def script_attack(host, port):
     ftp.quit()
 
 
+def script_replay(host, port):
+    """Rejoue des commandes depuis un fichier ``replay.txt``."""
+    if not unlocked:
+        do_knock(host, port)
+    ftp = make_ftps(host, port)
+    if not do_login(ftp, "anonymous", ""):
+        ftp.quit()
+        return
+    path = input("Fichier de commandes > ").strip() or "replay.txt"
+    try:
+        with open(path) as f:
+            cmds = [l.strip() for l in f if l.strip()]
+    except Exception as e:
+        print(Fore.RED + "× Lecture fail:", e)
+        ftp.quit()
+        return
+    for c in cmds:
+        try:
+            print(Fore.CYAN + "→ " + c)
+            resp = ftp.sendcmd(c)
+            print(Fore.GREEN + "←", resp)
+        except Exception as e:
+            print(Fore.RED + "×", c, ":", e)
+    ftp.quit()
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="127.0.0.1", help="Honeypot IP")
@@ -300,6 +358,19 @@ def main():
 5) CWD ../..
 6) SITE EXEC /bin/bash
 7) SITE BOF payload
+
+8) SITE HELP
+9) SITE VERSION
+10) SITE GETLOG
+11) RNFR/RNTO
+12) DELE
+13) MKD/RMD
+14) Session report
+15) Script reconnaissance
+16) Script attaque
+17) Replay commands
+18) Quitter
+=======
 8) RNFR/RNTO
 9) DELE
 10) MKD/RMD
@@ -332,6 +403,16 @@ def main():
         elif cmd == "5"  and ftp: do_cwd_traverse(ftp)
         elif cmd == "6"  and ftp: do_site_exec(ftp)
         elif cmd == "7"  and ftp: do_site_bof(ftp)
+        elif cmd == "8"  and ftp: do_site_help(ftp)
+        elif cmd == "9"  and ftp: do_site_version(ftp)
+        elif cmd == "10" and ftp: do_site_getlog(ftp)
+        elif cmd == "11" and ftp: do_rnfr_rnto(ftp)
+        elif cmd == "12" and ftp: do_dele(ftp)
+        elif cmd == "13" and ftp: do_mkd_rmd(ftp)
+        elif cmd == "14" and ftp: fetch_report(ftp)
+        elif cmd == "15":
+            script_enum(args.host, args.port)
+        elif cmd == "16":
         elif cmd == "8"  and ftp: do_rnfr_rnto(ftp)
         elif cmd == "9"  and ftp: do_dele(ftp)
         elif cmd == "10" and ftp: do_mkd_rmd(ftp)
@@ -340,7 +421,10 @@ def main():
             script_enum(args.host, args.port)
         elif cmd == "13":
             script_attack(args.host, args.port)
+        elif cmd == "17":
+            script_replay(args.host, args.port)
 
+        elif cmd == "18":
         elif cmd == "14":
             if ftp:
                 try: ftp.quit()
