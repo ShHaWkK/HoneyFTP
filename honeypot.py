@@ -128,7 +128,7 @@ if not (os.path.exists(KEY_FILE) and os.path.exists(CRT_FILE)):
 # 6) Twisted & config
 from twisted.cred import portal, checkers, credentials, error
 from twisted.cred.checkers import AllowAnonymousAccess
-from twisted.internet import endpoints, reactor, ssl, defer
+from twisted.internet import endpoints, reactor, ssl, defer, error as net_error
 from twisted.internet.protocol import DatagramProtocol
 from twisted.protocols import ftp
 from twisted.python import filepath
@@ -224,7 +224,8 @@ def start_ftp():
     def _listen_ssl(port, factory, *a, **kw):
         return reactor.listenSSL(port, factory, ctx, *a, **kw)
     HoneyFTP.listenFactory = staticmethod(_listen_ssl)
-    endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p))
+    HoneyFTP.passivePortRange = range(60000, 60100)
+    endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(HoneyFTPFactory(p, ctx))
     logging.info("Honeypot FTPS listening on port %s", PORT)
 
 def randomize_fs(max_dirs=3, max_files=2, max_total=50):
@@ -428,6 +429,17 @@ class HoneyFTP(ftp.FTP):
             self.sendLine("200 Protection level ignored")
         return
 
+    def getDTPPort(self, factory, interface=""):
+        for portn in self.passivePortRange:
+            try:
+                return reactor.listenSSL(portn, factory,
+                                         self.factory.ctx,
+                                         interface=interface)
+            except net_error.CannotListenError:
+                continue
+        raise net_error.CannotListenError("", portn,
+                                      f"No port available in range {self.passivePortRange}")
+
     def lineReceived(self, line):
         peer, cmd = self.transport.getPeer().host, line.decode("latin-1").strip()
         logging.info("CMD %s %s", peer, cmd)
@@ -442,6 +454,10 @@ class HoneyFTP(ftp.FTP):
 class HoneyFTPFactory(ftp.FTPFactory):
     protocol       = HoneyFTP
     welcomeMessage = "(vsFTPd 2.3.4)"
+
+    def __init__(self, portal, ctx):
+        super().__init__(portal)
+        self.ctx = ctx
 
 class HoneyRealm(ftp.FTPRealm):
     def __init__(self, root: str):
