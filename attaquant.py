@@ -32,16 +32,19 @@ unlocked = False
 REPORT_FILE = "session_report.txt"
 
 
-def do_knock(host):
-    """Envoie la séquence de port-knocking UDP 4020, 4021, 4022."""
+def do_knock(host, port=2121):
+    """Envoie la séquence de port-knocking UDP 4020, 4021, 4022 et
+    vérifie que le service FTPS répond."""
     print(Fore.MAGENTA + "→ Envoi du port-knock sequence…")
     for p in (4020, 4021, 4022):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.sendto(b'', (host, p))
+        s.sendto(b"", (host, p))
         s.close()
     global unlocked
     unlocked = True
-    print(Fore.MAGENTA + "← Knock envoyés. Attendez quelques instants…\n")
+    print(Fore.MAGENTA + "← Knock envoyés. Attendez quelques instants…")
+    time.sleep(1)
+    check_access(host, port)
 
 
 def make_ftps(host, port, retries=3):
@@ -65,6 +68,17 @@ def make_ftps(host, port, retries=3):
     banner = ftp.getresp().strip()
     print(Fore.YELLOW + "← Bannière :", banner)
     return ftp
+
+def check_access(host, port):
+    """Tente une connexion rapide pour confirmer l'accès FTPS."""
+    try:
+        ftp = make_ftps(host, port, retries=1)
+        ftp.close()
+        print(Fore.GREEN + "✓ Honeypot accessible\n")
+        return True
+    except Exception as e:
+        print(Fore.RED + f"× Connexion impossible : {e}\n")
+        return False
 
 
 def do_login(ftp, user, pwd):
@@ -222,7 +236,7 @@ def fetch_report(ftp):
 def script_enum(host, port):
     """Connexion anonyme et quelques commandes de reconnaissance."""
     if not unlocked:
-        do_knock(host)
+        do_knock(host, port)
     ftp = make_ftps(host, port)
     if not do_login(ftp, "anonymous", ""):
         ftp.quit()
@@ -236,7 +250,7 @@ def script_enum(host, port):
 def script_attack(host, port):
     """Exploitation automatisée avec l'utilisateur ``attacker``."""
     if not unlocked:
-        do_knock(host)
+        do_knock(host, port)
     ftp = make_ftps(host, port)
     if not do_login(ftp, "attacker", "secret"):
         ftp.quit()
@@ -298,12 +312,12 @@ def main():
 """)
         cmd = input("Votre choix > ").strip()
         if cmd == "0":
-            do_knock(args.host)
+            do_knock(args.host, args.port)
             continue
 
         if cmd in ("1", "2", "3"):
             if not unlocked:
-                do_knock(args.host)
+                do_knock(args.host, args.port)
             if ftp:
                 try: ftp.quit()
                 except: pass
