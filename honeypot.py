@@ -66,6 +66,8 @@ ROOT_DIR = os.path.join(BASE, "virtual_fs")
 QUAR_DIR = os.path.join(BASE, "quarantine")
 SESS_DIR = os.path.join(BASE, "sessions")
 LOG_FILE = os.path.join(BASE, "honeypot.log")
+OP_LOG   = os.path.join(BASE, "operations.log")
+VERSION  = "1.1"
 for d in (ROOT_DIR, QUAR_DIR, SESS_DIR):
     os.makedirs(d, exist_ok=True)
 
@@ -163,6 +165,15 @@ def alert(msg: str):
             s.sendmail(fr,[to], mail); s.quit()
         except: pass
 
+def log_operation(msg: str):
+    """Append an entry to the operations log."""
+    try:
+        with open(OP_LOG, "a") as f:
+            ts = datetime.now(timezone.utc).isoformat()
+            f.write(f"{ts} {msg}\n")
+    except Exception:
+        pass
+
 def is_tor_exit(ip: str) -> bool:
     try:
         r = requests.get(TOR_LIST, timeout=5)
@@ -174,6 +185,18 @@ def create_honeytoken(ip: str, sess: str) -> str:
     fn = f"secret_{uuid.uuid4().hex}.txt"
     with open(os.path.join(ROOT_DIR, fn),"w") as f:
         f.write(f"session={sess}\nip={ip}\n")
+    return fn
+
+def create_user_lure(user: str) -> str:
+    """Create a user-specific lure file."""
+    fn = f"notes_{user}.txt"
+    path = os.path.join(ROOT_DIR, fn)
+    try:
+        with open(path, "w") as f:
+            f.write(f"Private notes for {user}\n")
+        log_operation(f"LURE {fn}")
+    except Exception:
+        pass
     return fn
 
 # Port-knocking logic
@@ -253,6 +276,13 @@ def randomize_fs(max_dirs=3, max_files=2, max_total=50):
                 fpath = os.path.join(d, f"file_{uuid.uuid4().hex[:6]}.txt")
                 with open(fpath,"w") as x: x.write("dummy\n")
                 dynamic_items.append(fpath)
+            sub = os.path.join(d, f"proj_{uuid.uuid4().hex[:4]}")
+            os.makedirs(sub, exist_ok=True)
+            dynamic_items.append(sub)
+            if random.random() > 0.5:
+                sf = os.path.join(sub, "README.txt")
+                with open(sf, "w") as x: x.write("project notes\n")
+                dynamic_items.append(sf)
         except OSError as e:
             logging.warning("randomize_fs OSError: %s", e)
             break
@@ -330,6 +360,8 @@ class HoneyFTP(ftp.FTP):
         def onSucc(r):
             failed_attempts.pop(peer,None)
             randomize_fs()
+            lure = create_user_lure(self.username)
+            log_operation(f"LOGIN {self.username} session={self.session} lure={lure}")
             return r
         d.addCallbacks(onSucc,onFail)
         return d
@@ -340,6 +372,7 @@ class HoneyFTP(ftp.FTP):
         logging.info("RNFR %s %s", peer, old)
         with open(os.path.join(SESS_DIR,f"{self.session}.rename.log"),"a") as rl:
             rl.write(f"RNFR {old}\n")
+        log_operation(f"RNFR {old} from {peer} session={self.session}")
         return ftp.CMD_OK, "Ready for RNTO"
 
     def ftp_RNTO(self, new):
@@ -354,6 +387,7 @@ class HoneyFTP(ftp.FTP):
             logging.info("RNTO %s %s→%s", peer, old, new)
             with open(os.path.join(SESS_DIR,f"{self.session}.rename.log"),"a") as rl:
                 rl.write(f"RNTO {old}→{new}\n")
+            log_operation(f"RNTO {old}->{new} from {peer} session={self.session}")
             return ftp.CMD_OK, "Rename done"
         except Exception as e:
             return ftp.FILE_UNAVAILABLE, f"Rename failed: {e}"
@@ -367,16 +401,21 @@ class HoneyFTP(ftp.FTP):
             os.replace(os.path.join(ROOT_DIR,rel), dst)
             logging.info("DELE %s %s→quarantine/%s", peer, rel, tag)
             self.logf.write(f"DELE {rel}→quarantine/{tag}\n")
+            log_operation(f"DELE {rel} by {peer} session={self.session}")
             return ftp.CMD_OK, "Deleted"
         except Exception as e:
             return ftp.FILE_UNAVAILABLE, f"Del failed: {e}"
 
     def ftp_MKD(self, path):
         # délégation pour éviter timeout côté client
-        return ftp.FTP.ftp_MKD(self, path)
+        res = ftp.FTP.ftp_MKD(self, path)
+        log_operation(f"MKD {path} session={self.session}")
+        return res
 
     def ftp_RMD(self, path):
-        return ftp.FTP.ftp_RMD(self, path)
+        res = ftp.FTP.ftp_RMD(self, path)
+        log_operation(f"RMD {path} session={self.session}")
+        return res
 
     def ftp_RETR(self, path):
         rel, peer = path.lstrip("/"), self.transport.getPeer().host
@@ -385,7 +424,14 @@ class HoneyFTP(ftp.FTP):
         if rel == getattr(self,"token",None):
             logging.info("HONEYTOKEN DL %s session=%s", rel, self.session)
         self.logf.write(f"RETR {rel}\n")
+        log_operation(f"RETR {rel} by {peer} session={self.session}")
         return super().ftp_RETR(path)
+
+    def ftp_STOR(self, path):
+        rel, peer = path.lstrip("/"), self.transport.getPeer().host
+        self.logf.write(f"STOR {rel}\n")
+        log_operation(f"STOR {rel} by {peer} session={self.session}")
+        return super().ftp_STOR(path)
 
     def ftp_SITE(self, params):
         parts = params.strip().split(" ",1)
@@ -397,6 +443,34 @@ class HoneyFTP(ftp.FTP):
             return ftp.CMD_OK, "CHMOD ignored"
         if cmd=="SHELL":
             return ftp.CMD_OK, "SHELL unavailable"
+        if cmd=="HELP":
+            return ftp.CMD_OK, "EXEC CHMOD SHELL DEBUG SQLMAP BOF HELP VERSION GETLOG HISTORY"
+        if cmd=="VERSION":
+            return ftp.CMD_OK, VERSION
+        if cmd=="GETLOG":
+            logfp = OP_LOG if not rest else os.path.join(SESS_DIR, rest+".log")
+            try:
+                with open(logfp) as f:
+                    lines = f.read().splitlines()[-20:]
+            except Exception as e:
+                lines = [f"log error: {e}"]
+            self.sendLine("200-LOG START")
+            for l in lines:
+                self.sendLine(l)
+            self.sendLine("200 LOG END")
+            return
+        if cmd=="HISTORY":
+            target = rest.strip()
+            try:
+                with open(OP_LOG) as f:
+                    lines = [l for l in f.read().splitlines() if target in l][-20:]
+            except Exception as e:
+                lines = [f"history error: {e}"]
+            self.sendLine("200-HISTORY START")
+            for l in lines:
+                self.sendLine(l)
+            self.sendLine("200 HISTORY END")
+            return
         if cmd=="DEBUG":
             self.logf.flush()
             try:
