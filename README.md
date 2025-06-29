@@ -80,3 +80,35 @@ ailleurs.
 Le service attendra la séquence de knock UDP `4020`, `4021`, `4022` avant de
 libérer le port FTP.
 
+## Attacker Client
+
+Le script `attaquant.py` permet de vérifier l'accès au honeypot et d'exécuter
+différentes commandes FTPS. Lancez-le ainsi :
+
+```bash
+python attaquant.py --host <ip> --port 2121
+```
+
+Le menu interactif accepte les valeurs **0 à 15** :
+
+| Choix | Action |
+|------:|--------|
+|0|Envoyer la séquence de knock et tester la connexion|
+|1|Connexion anonyme|
+|2|Connexion `attacker`/`secret`|
+|3|Connexion avec des identifiants personnalisés|
+|4|`NLST` – liste des fichiers|
+|5|`RETR` – télécharger un fichier|
+|6|`STOR` – téléverser un fichier|
+|7|`CWD ../..` – tentative de traversal|
+|8|`SITE EXEC` – commande shell|
+|9|`SITE BOF` – payload overflow|
+|10|`RNFR`/`RNTO` – renommage|
+|11|`DELE` – suppression|
+|12|`MKD`/`RMD` – gestion de répertoires|
+|13|Récupérer le journal de session|
+|14|Script de reconnaissance automatisé|
+|15|Script d'attaque automatisé|
+
+L'option `16` quitte le client.
+
