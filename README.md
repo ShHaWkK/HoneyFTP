@@ -7,6 +7,16 @@ against the Tor exit list, detects brute-force attacks, and creates realistic
 lure files with canary triggers. Sensitive actions can generate alerts via
 Slack or SMTP. Each connection has its own session log for forensic analysis.
 
+## Fonctionnalités
+
+- *Port-knocking* UDP pour activer le serveur réel
+- Uploads anonymes autorisés et fichiers supprimés placés en quarantaine
+- Détection d'IP Tor, brute-force et génération de leurres
+- Journaux colorés sur la console et `honeypot.log` au format texte
+- Commandes supplémentaires `SITE UPTIME` et `SITE STATS`
+- Script `attaquant.py` exécutable en mode non interactif (`--script` ou `--commands`)
+
+
 ## Requirements
 
 - Python 3.8 or newer
@@ -28,6 +38,7 @@ nohup python honeypot.py &
 ```
 
 The server listens on port `2121` by default and writes logs to `honeypot.log`.
+Console output uses ANSI colors while the file keeps plain text.
 Set `HONEYFTP_PORT`, `SLACK_WEBHOOK` or `SMTP_SERVER` environment variables to
 enable alerts or change the port.
 
@@ -89,7 +100,20 @@ différentes commandes FTPS. Lancez-le ainsi :
 python attaquant.py --host <ip> --port 2121
 ```
 
-Le menu interactif accepte les valeurs **0 à 18** :
+Vous pouvez également automatiser l'exécution :
+
+```bash
+# Script de reconnaissance complet
+python attaquant.py --script enum
+
+# Script d'attaque automatisé
+python attaquant.py --script attack
+
+# Rejouer des commandes depuis un fichier
+python attaquant.py --commands commandes.txt
+```
+
+Le menu interactif accepte les valeurs **0 à 20** :
 
 
 | Choix | Action |
@@ -112,7 +136,16 @@ Le menu interactif accepte les valeurs **0 à 18** :
 |15|Script de reconnaissance automatisé|
 |16|Script d'attaque automatisé (connexion anonyme)|
 |17|Rejouer une liste de commandes|
+|19|`SITE UPTIME` – durée de fonctionnement|
+|20|`SITE STATS` – statistiques globales|
 
 L'option `18` quitte le client.
+
+## Améliorations possibles
+
+- Gestion d'utilisateurs avec quotas individuels
+- Limitation de la taille totale des fichiers stockés
+- Export des journaux vers un serveur distant
+- Scripts d'attaque plus réalistes et modules de reconnaissance
 
 

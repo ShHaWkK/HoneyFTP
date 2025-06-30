@@ -14,7 +14,20 @@ Ce document présente un scénario d'utilisation du script `attaquant.py` fourni
 python attaquant.py --host <IP_HONEYPOT> --port 2121
 ```
 
-Un menu interactif apparaît avec les options numérotées **0 à 18**. Les choix les plus utiles sont :
+Des modes non interactifs sont disponibles :
+
+```bash
+# Script de reconnaissance
+python attaquant.py --script enum
+
+# Script d'attaque complet
+python attaquant.py --script attack
+
+# Rejouer un fichier de commandes
+python attaquant.py --commands mon_fichier.txt
+```
+
+Un menu interactif apparaît avec les options numérotées **0 à 20**. Les choix les plus utiles sont :
 
 | Option | Description |
 |-------:|-------------|
@@ -36,6 +49,8 @@ Un menu interactif apparaît avec les options numérotées **0 à 18**. Les choi
 |15|Script de reconnaissance automatisé|
 |16|Script d'attaque automatisé|
 |17|Rejoue une liste de commandes depuis `replay.txt`|
+|19|`SITE UPTIME` – affiche la durée de fonctionnement|
+|20|`SITE STATS` – statistiques globales|
 |18|Quitte le client|
 
 ## 3. Scénario type
