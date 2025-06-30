@@ -275,11 +275,11 @@ def script_enum(host, port):
 
 
 def script_attack(host, port):
-    """Exploitation automatisée avec l'utilisateur ``attacker``."""
+    """Exploitation automatisée via une connexion ``anonymous``."""
     if not unlocked:
         do_knock(host, port)
     ftp = make_ftps(host, port)
-    if not do_login(ftp, 'attacker', 'secret'):
+    if not do_login(ftp, 'anonymous', ''):
         ftp.quit()
         return
     do_nlst(ftp)
