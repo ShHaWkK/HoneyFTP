@@ -45,6 +45,7 @@ for pkg, imp in [
     ("service-identity","service_identity"),
     ("cryptography", None),
     ("pyOpenSSL", "OpenSSL"),
+    ("colorama", None),
 ]:
     ensure(pkg, imp)
 
@@ -53,6 +54,7 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
+from colorama import init as color_init, Fore, Style
 
 # 2) Détermine le répertoire de base
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -68,16 +70,44 @@ SESS_DIR = os.path.join(BASE, "sessions")
 LOG_FILE = os.path.join(BASE, "honeypot.log")
 OP_LOG   = os.path.join(BASE, "operations.log")
 VERSION  = "1.1"
+SERVER_START = datetime.now(timezone.utc)
 for d in (ROOT_DIR, QUAR_DIR, SESS_DIR):
     os.makedirs(d, exist_ok=True)
 
 # 3) Logging central
-handlers = [logging.StreamHandler()]
-try: handlers.insert(0, logging.FileHandler(LOG_FILE))
-except: pass
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(message)s",
-                    handlers=handlers)
+color_init()
+
+class ColorFormatter(logging.Formatter):
+    COLORS = {
+        logging.DEBUG: Fore.CYAN,
+        logging.INFO: Fore.GREEN,
+        logging.WARNING: Fore.YELLOW,
+        logging.ERROR: Fore.RED,
+        logging.CRITICAL: Fore.WHITE + Style.BRIGHT,
+    }
+    RESET = Style.RESET_ALL
+
+    def format(self, record):
+        msg = super().format(record)
+        color = self.COLORS.get(record.levelno, self.RESET)
+        return color + msg + self.RESET
+
+plain_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+color_fmt = ColorFormatter("%(asctime)s [%(levelname)s] %(message)s")
+
+handlers = []
+try:
+    fh = logging.FileHandler(LOG_FILE)
+    fh.setFormatter(plain_fmt)
+    handlers.append(fh)
+except Exception:
+    pass
+
+sh = logging.StreamHandler()
+sh.setFormatter(color_fmt)
+handlers.append(sh)
+
+logging.basicConfig(level=logging.INFO, handlers=handlers)
 
 # 4) Leurres initiaux
 for rel, content in {
@@ -93,6 +123,15 @@ for rel, content in {
 
 failed_attempts = {}
 dynamic_items   = []
+# Counters for SITE STATS
+STATS = {
+    "connections": 0,
+    "logins": 0,
+    "uploads": 0,
+    "downloads": 0,
+    "deletes": 0,
+    "renames": 0,
+}
 
 # 5) Génération du certificat TLS
 KEY_FILE = os.path.join(ROOT_DIR, "server.key")
@@ -318,6 +357,7 @@ class HoneyShell(ftp.FTPShell):
 class HoneyFTP(ftp.FTP):
     def connectionMade(self):
         super().connectionMade()
+        STATS["connections"] += 1
         self.session = uuid.uuid4().hex
         peer        = self.transport.getPeer().host
         self.logf   = open(os.path.join(SESS_DIR,f"{self.session}.log"),"a")
@@ -362,6 +402,7 @@ class HoneyFTP(ftp.FTP):
             randomize_fs()
             lure = create_user_lure(self.username)
             log_operation(f"LOGIN {self.username} session={self.session} lure={lure}")
+            STATS["logins"] += 1
             return r
         d.addCallbacks(onSucc,onFail)
         return d
@@ -370,27 +411,32 @@ class HoneyFTP(ftp.FTP):
         peer, old = self.transport.getPeer().host, fn.lstrip("/")
         self._old = old
         logging.info("RNFR %s %s", peer, old)
-        with open(os.path.join(SESS_DIR,f"{self.session}.rename.log"),"a") as rl:
+        with open(os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a") as rl:
             rl.write(f"RNFR {old}\n")
         log_operation(f"RNFR {old} from {peer} session={self.session}")
-        return ftp.CMD_OK, "Ready for RNTO"
+        self.sendLine("350 Ready for RNTO")
+        return
 
     def ftp_RNTO(self, new):
-        peer, old = self.transport.getPeer().host, getattr(self,"_old",None)
+        peer, old = self.transport.getPeer().host, getattr(self, "_old", None)
         new = new.lstrip("/")
         if not old:
-            return ftp.SYNTAX_ERR, "RNFR first"
-        src, dst = os.path.join(ROOT_DIR,old), os.path.join(ROOT_DIR,new)
+            self.sendLine("550 RNFR first")
+            return
+        src, dst = os.path.join(ROOT_DIR, old), os.path.join(ROOT_DIR, new)
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             os.rename(src, dst)
             logging.info("RNTO %s %s→%s", peer, old, new)
-            with open(os.path.join(SESS_DIR,f"{self.session}.rename.log"),"a") as rl:
+            with open(os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a") as rl:
                 rl.write(f"RNTO {old}→{new}\n")
             log_operation(f"RNTO {old}->{new} from {peer} session={self.session}")
-            return ftp.CMD_OK, "Rename done"
+            STATS["renames"] += 1
+            self.sendLine("250 Rename done")
+            return
         except Exception as e:
-            return ftp.FILE_UNAVAILABLE, f"Rename failed: {e}"
+            self.sendLine(f"550 Rename failed: {e}")
+            return
 
     def ftp_DELE(self, path):
         peer, rel = self.transport.getPeer().host, path.lstrip("/")
@@ -398,13 +444,16 @@ class HoneyFTP(ftp.FTP):
         dst = os.path.join(QUAR_DIR, tag)
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            os.replace(os.path.join(ROOT_DIR,rel), dst)
+            os.replace(os.path.join(ROOT_DIR, rel), dst)
             logging.info("DELE %s %s→quarantine/%s", peer, rel, tag)
             self.logf.write(f"DELE {rel}→quarantine/{tag}\n")
             log_operation(f"DELE {rel} by {peer} session={self.session}")
-            return ftp.CMD_OK, "Deleted"
+            STATS["deletes"] += 1
+            self.sendLine("250 Deleted")
+            return
         except Exception as e:
-            return ftp.FILE_UNAVAILABLE, f"Del failed: {e}"
+            self.sendLine(f"550 Del failed: {e}")
+            return
 
     def ftp_MKD(self, path):
         # délégation pour éviter timeout côté client
@@ -425,12 +474,14 @@ class HoneyFTP(ftp.FTP):
             logging.info("HONEYTOKEN DL %s session=%s", rel, self.session)
         self.logf.write(f"RETR {rel}\n")
         log_operation(f"RETR {rel} by {peer} session={self.session}")
+        STATS["downloads"] += 1
         return super().ftp_RETR(path)
 
     def ftp_STOR(self, path):
         rel, peer = path.lstrip("/"), self.transport.getPeer().host
         self.logf.write(f"STOR {rel}\n")
         log_operation(f"STOR {rel} by {peer} session={self.session}")
+        STATS["uploads"] += 1
         return super().ftp_STOR(path)
 
     def ftp_SITE(self, params):
@@ -438,15 +489,20 @@ class HoneyFTP(ftp.FTP):
         cmd = parts[0].upper()
         rest = parts[1] if len(parts)>1 else ""
         if cmd=="EXEC" and "/bin/bash" in rest:
-            return ftp.CMD_OK, "Welcome to Fake Bash v1.0"
+            self.sendLine("200 Welcome to Fake Bash v1.0")
+            return
         if cmd=="CHMOD":
-            return ftp.CMD_OK, "CHMOD ignored"
+            self.sendLine("200 CHMOD ignored")
+            return
         if cmd=="SHELL":
-            return ftp.CMD_OK, "SHELL unavailable"
+            self.sendLine("200 SHELL unavailable")
+            return
         if cmd=="HELP":
-            return ftp.CMD_OK, "EXEC CHMOD SHELL DEBUG SQLMAP BOF HELP VERSION GETLOG HISTORY"
+            self.sendLine("200 EXEC CHMOD SHELL DEBUG SQLMAP BOF HELP VERSION GETLOG HISTORY UPTIME STATS")
+            return
         if cmd=="VERSION":
-            return ftp.CMD_OK, VERSION
+            self.sendLine(f"200 {VERSION}")
+            return
         if cmd=="GETLOG":
             logfp = OP_LOG if not rest else os.path.join(SESS_DIR, rest+".log")
             try:
@@ -483,13 +539,34 @@ class HoneyFTP(ftp.FTP):
                 self.sendLine(l)
             self.sendLine("200 DEBUG END")
             return
+        if cmd=="UPTIME":
+            uptime = datetime.now(timezone.utc) - SERVER_START
+            self.sendLine(f"200 {str(uptime).split('.')[0]}")
+            return
+        if cmd=="STATS":
+            lines = [
+                f"connections={STATS['connections']}",
+                f"logins={STATS['logins']}",
+                f"uploads={STATS['uploads']}",
+                f"downloads={STATS['downloads']}",
+                f"deletes={STATS['deletes']}",
+                f"renames={STATS['renames']}",
+            ]
+            self.sendLine("200-STATS START")
+            for l in lines:
+                self.sendLine(l)
+            self.sendLine("200 STATS END")
+            return
         if cmd=="SQLMAP":
-            return ftp.CMD_OK, "SQLi simulation complete"
+            self.sendLine("200 SQLi simulation complete")
+            return
         if cmd=="BOF":
             if len(rest)>1000:
                 logging.warning("SIMUL BOF by %s len=%d", self.transport.getPeer().host, len(rest))
-                return ftp.REQ_ACTN_ABRTD_LOCAL_ERR, "Buffer overflow!"
-            return ftp.CMD_OK,
+                self.sendLine("451 Buffer overflow!")
+                return
+            self.sendLine("200")
+            return
         # Unknown SITE sub-command → syntax error
         return ftp.SYNTAX_ERR, params
 
@@ -539,14 +616,23 @@ class HoneyFTPFactory(ftp.FTPFactory):
 
 class HoneyRealm(ftp.FTPRealm):
     def __init__(self, root: str):
+        """Use a single virtual filesystem for all users."""
         # FTPRealm expects a plain path string. Passing a FilePath object
         # causes "TypeError: expected str, bytes or os.PathLike object" on
         # startup. Keep the original string here and let FTPRealm convert it.
         super().__init__(root)
-    def avatarForAnonymousUser(self):
-        return HoneyShell("anonymous")
-    def avatarForUsername(self, username: str):
-        return HoneyShell(username)
+        self._root = root
+
+    def requestAvatar(self, avatarId, mind, *interfaces):
+        for iface in interfaces:
+            if iface is ftp.IFTPShell:
+                user = (
+                    "anonymous"
+                    if avatarId is checkers.ANONYMOUS
+                    else str(avatarId)
+                )
+                return iface, HoneyShell(user), lambda: None
+        raise NotImplementedError("Only IFTPShell interface is supported")
 
 # 10) Main
 def main():

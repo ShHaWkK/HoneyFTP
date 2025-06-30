@@ -178,6 +178,30 @@ def do_site_version(ftp):
         print(Fore.RED + "× SITE VERSION fail:", e)
 
 
+def do_site_uptime(ftp):
+    try:
+        resp = ftp.sendcmd('SITE UPTIME')
+        print(Fore.GREEN + "←", resp)
+    except Exception as e:
+        print(Fore.RED + "× SITE UPTIME fail:", e)
+
+
+def do_site_stats(ftp):
+    try:
+        ftp.putcmd('SITE STATS')
+        resp = ftp.getmultiline()
+    except Exception as e:
+        print(Fore.RED + "× SITE STATS fail:", e)
+        return
+    lines = resp.splitlines()
+    if lines and lines[0].startswith('200-'):
+        lines = lines[1:]
+    if lines and lines[-1].startswith('200'):
+        lines = lines[:-1]
+    for l in lines:
+        print(l)
+
+
 def do_site_getlog(ftp):
     sess = input("Session ID (blank for global) > ").strip()
     cmd = f"SITE GETLOG {sess}" if sess else 'SITE GETLOG'
@@ -308,15 +332,16 @@ def script_attack(host, port):
     ftp.quit()
 
 
-def script_replay(host, port):
-    """Rejoue des commandes depuis un fichier ``replay.txt``."""
+def script_replay(host, port, path=None):
+    """Rejoue des commandes depuis ``replay.txt`` ou un fichier donné."""
     if not unlocked:
         do_knock(host, port)
     ftp = make_ftps(host, port)
     if not do_login(ftp, 'anonymous', ''):
         ftp.quit()
         return
-    path = input("Fichier de commandes > ").strip() or 'replay.txt'
+    if path is None:
+        path = input("Fichier de commandes > ").strip() or 'replay.txt'
     try:
         with open(path) as f:
             cmds = [l.strip() for l in f if l.strip()]
@@ -338,7 +363,19 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="127.0.0.1", help="Honeypot IP")
     p.add_argument("--port", default=2121, type=int, help="Port FTPS implicite")
+    p.add_argument("--script", choices=["enum", "attack"], help="Exécute un script prédéfini puis quitte")
+    p.add_argument("--commands", help="Rejoue les commandes d'un fichier et quitte")
     args = p.parse_args()
+
+    if args.script == "enum":
+        script_enum(args.host, args.port)
+        return
+    if args.script == "attack":
+        script_attack(args.host, args.port)
+        return
+    if args.commands:
+        script_replay(args.host, args.port, args.commands)
+        return
 
     ftp = None
     while True:
@@ -364,6 +401,8 @@ def main():
 16) Script attaque
 17) Replay commands
 18) Quitter
+19) SITE UPTIME
+20) SITE STATS
 """)
         cmd = input("Votre choix > ").strip()
 
@@ -420,6 +459,10 @@ def main():
                     pass
             print("Bye !")
             break
+        elif cmd == "19" and ftp:
+            do_site_uptime(ftp)
+        elif cmd == "20" and ftp:
+            do_site_stats(ftp)
         else:
             print(Fore.RED + "→ Choix invalide ou pas de connexion active.")
 
