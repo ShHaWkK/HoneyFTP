@@ -46,6 +46,24 @@ def do_knock(host, port=2121):
     check_access(host, port)
 
 
+def brute_knock(host, port=2121, start=4015, end=4030):
+    """Attempt to discover the knock sequence by trying consecutive triples."""
+    global unlocked
+    print(Fore.MAGENTA + "→ Brute-forcing knock ports…")
+    for base in range(start, end - 2):
+        seq = [base, base + 1, base + 2]
+        for p in seq:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.sendto(b"", (host, p))
+            s.close()
+        time.sleep(1)
+        if check_access(host, port):
+            unlocked = True
+            print(Fore.GREEN + f"✓ Sequence trouvée : {seq}")
+            return
+    print(Fore.RED + "× Sequence introuvable")
+
+
 def make_ftps(host, port, retries=3):
     """Établit la connexion FTPS implicite."""
     ctx = ssl._create_unverified_context()
@@ -403,6 +421,7 @@ def main():
 18) Quitter
 19) SITE UPTIME
 20) SITE STATS
+21) Brute-force knock
 """)
         cmd = input("Votre choix > ").strip()
 
@@ -463,6 +482,8 @@ def main():
             do_site_uptime(ftp)
         elif cmd == "20" and ftp:
             do_site_stats(ftp)
+        elif cmd == "21":
+            brute_knock(args.host, args.port)
         else:
             print(Fore.RED + "→ Choix invalide ou pas de connexion active.")
 

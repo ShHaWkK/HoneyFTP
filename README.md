@@ -15,6 +15,7 @@ Slack or SMTP. Each connection has its own session log for forensic analysis.
 - Journaux colorés sur la console et `honeypot.log` au format texte
 - Commandes supplémentaires `SITE UPTIME` et `SITE STATS`
 - Script `attaquant.py` exécutable en mode non interactif (`--script` ou `--commands`)
+- Arborescence de fichiers crédible (finance, projets, backups…) avec honeytokens
 
 
 ## Requirements
@@ -113,6 +114,10 @@ python attaquant.py --script attack
 python attaquant.py --commands commandes.txt
 ```
 
+Un compte factice `attacker/secret` est accessible **uniquement après**
+envoi de la séquence de port‑knocking. L'option `21` du menu tente de
+deviner cette séquence automatiquement.
+
 Le menu interactif accepte les valeurs **0 à 20** :
 
 
@@ -138,6 +143,7 @@ Le menu interactif accepte les valeurs **0 à 20** :
 |17|Rejouer une liste de commandes|
 |19|`SITE UPTIME` – durée de fonctionnement|
 |20|`SITE STATS` – statistiques globales|
+|21|Recherche de la séquence de knock|
 
 L'option `18` quitte le client.
 

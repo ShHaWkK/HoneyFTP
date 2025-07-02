@@ -123,6 +123,30 @@ for rel, content in {
 
 failed_attempts = {}
 dynamic_items   = []
+# Create a small corporate-like directory tree
+def create_corporate_fs():
+    tree = {
+        "finance/payroll_2024.xlsx": "PAYROLL\nTopSecret\n",
+        "finance/backups/ledger.bak": os.urandom(1024 * 1024),  # 1 MB dummy
+        "engineering/config/app.conf": "debug=true\n",
+        "engineering/backups/projectX.tar.gz": os.urandom(512000),
+        "engineering/projects/ProjectX/README.md": "Internal project\n",
+        "engineering/projects/ProjectX/src/main.py": "print('Project X')\n",
+        "hr/employees.xlsx": "EMPLOYEE LIST\n",
+        "backups/server.img": os.urandom(2 * 1024 * 1024),  # 2 MB dummy
+        "archives/old_financials.zip": b"PK\x03\x04CORRUPTED" + os.urandom(500),
+    }
+    for rel, data in tree.items():
+        path = os.path.join(ROOT_DIR, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            continue
+        mode = "wb" if isinstance(data, (bytes, bytearray)) else "w"
+        with open(path, mode) as f:
+            f.write(data)
+
+create_corporate_fs()
+
 # Counters for SITE STATS
 STATS = {
     "connections": 0,
@@ -177,7 +201,9 @@ from twisted.python import filepath
 TOR_LIST   = "https://check.torproject.org/torbulkexitlist"
 BRUTEF_THR = 5
 DELAY_SEC  = 2
-CANARY     = {"passwords.txt","secrets/ssh_key"}
+CANARY     = {"passwords.txt","secrets/ssh_key",
+              "finance/payroll_2024.xlsx",
+              "hr/employees.xlsx"}
 FORBID     = {"secrets"}        # supprimer un répertoire "secrets" déclenche alerta
 PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
 KNOCK_SEQ  = [4020, 4021, 4022]
@@ -222,8 +248,11 @@ def is_tor_exit(ip: str) -> bool:
 
 def create_honeytoken(ip: str, sess: str) -> str:
     fn = f"secret_{uuid.uuid4().hex}.txt"
-    with open(os.path.join(ROOT_DIR, fn),"w") as f:
-        f.write(f"session={sess}\nip={ip}\n")
+    path = os.path.join(ROOT_DIR, fn)
+    with open(path, "w") as f:
+        f.write(f"session={sess}\n")
+        f.write(f"ip={ip}\n")
+        f.write(f"timestamp={datetime.now(timezone.utc).isoformat()}\n")
     return fn
 
 def create_user_lure(user: str) -> str:
@@ -343,7 +372,7 @@ class HoneyShell(ftp.FTPShell):
 
     def openForReading(self, path):
         rel = "/".join(path)
-        if rel in CANARY:
+        if rel in CANARY or rel == getattr(self, "token", None):
             alert(f"CANARY READ {rel} by {self.avatarId}")
         return super().openForReading(path)
 
