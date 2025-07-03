@@ -924,7 +924,6 @@ reactor_started = False
 def run_server():
     """Run the Twisted reactor and bind knock ports once."""
     global knock_ports, reactor_started
-    # Guard: only bind UDP ports and start the reactor the first time
     if not knock_ports:
         for p in KNOCK_SEQ:
             knock_ports.append(reactor.listenUDP(p, KnockProtocol(p)))
