@@ -21,7 +21,7 @@ Fonctionnalités :
 """
 
 import os, sys, subprocess, shutil, uuid, random, logging, smtplib, tempfile
-import json, zipfile, atexit, base64
+import json, zipfile, atexit, base64, threading, argparse
 from datetime import datetime, timedelta, timezone
 
 # 1) Bootstrap pip deps
@@ -891,57 +891,109 @@ class HoneyRealm(ftp.FTPRealm):
                 return iface, HoneyShell(user), lambda: None
         raise NotImplementedError("Only IFTPShell interface is supported")
 
-# 10) Admin shell
-import threading, cmd, argparse
-
-class AdminShell(cmd.Cmd):
-    intro = "HoneyFTP admin shell. type help or ?"
-    prompt = "honeypot> "
-
-    def do_sessions(self, arg):
-        """List active session IDs"""
-        if os.path.isdir(SESS_DIR):
-            for f in os.listdir(SESS_DIR):
-                if f.endswith('.log'):
-                    print(f[:-4])
-
-    def do_show(self, sid):
-        """show <id> - display full session log"""
-        path = os.path.join(SESS_DIR, f"{sid}.log")
-        try:
-            with open(path) as f:
-                print(f.read())
-        except FileNotFoundError:
-            print("not found")
-
-    def do_attacks(self, arg):
-        """Show attack statistics"""
-        for k, v in STATS.items():
-            print(f"{k}: {v}")
-
-    def do_quit(self, arg):
-        """Quit shell and stop server"""
-        reactor.callFromThread(reactor.stop)
-        return True
-
+# 10) Server thread helpers
+server_thread = None
+server_running = False
 
 def run_server():
     for p in KNOCK_SEQ:
         reactor.listenUDP(p, KnockProtocol(p))
     logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
-    reactor.run()
+    reactor.run(installSignalHandlers=0)
+
+def start_server():
+    global server_thread, server_running
+    if server_running:
+        print("Serveur déjà démarré")
+        return
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+    server_running = True
+
+def stop_server():
+    global server_running
+    if not server_running:
+        print("Serveur non démarré")
+        return
+    reactor.callFromThread(reactor.stop)
+    server_thread.join()
+    server_running = False
+    _cleanup_pid()
+
+def tail_log():
+    try:
+        with open(LOG_FILE) as f:
+            lines = f.read().splitlines()[-20:]
+    except FileNotFoundError:
+        print("Aucun fichier de log")
+        return
+    for l in lines:
+        print(l)
+
+def list_sessions():
+    if not os.path.isdir(SESS_DIR):
+        print("Aucune session")
+        return
+    for f in os.listdir(SESS_DIR):
+        if f.endswith('.log'):
+            print(f[:-4])
+
+def show_session():
+    sid = input("ID de session > ").strip()
+    path = os.path.join(SESS_DIR, f"{sid}.log")
+    try:
+        with open(path) as f:
+            print(f.read())
+    except FileNotFoundError:
+        print("Session introuvable")
+
+def show_stats():
+    for k, v in STATS.items():
+        print(f"{k}: {v}")
+
+
+def menu_loop():
+    MENU = (
+        "\n"
+        "┌───────────────────────────────────────────┐\n"
+        "│      High-Interaction FTPS Honeypot       │\n"
+        "└───────────────────────────────────────────┘\n"
+        "[1] Demarrer le honeypot FTPS\n"
+        "[2] Arreter le honeypot\n"
+        "[3] Voir les 20 dernieres lignes du log\n"
+        "[4] Lister les sessions (ID)\n"
+        "[5] Afficher une session (ex. 5)\n"
+        "[6] Statistiques globales (connections, uploads...)\n"
+        "[0] Quitter\n"
+    )
+    while True:
+        print(MENU)
+        choice = input("Choix > ").strip()
+        if choice == "1":
+            start_server()
+        elif choice == "2":
+            stop_server()
+        elif choice == "3":
+            tail_log()
+        elif choice == "4":
+            list_sessions()
+        elif choice == "5":
+            show_session()
+        elif choice == "6":
+            show_stats()
+        elif choice == "0":
+            stop_server()
+            break
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shell", action="store_true", help="start admin shell")
+    ap.add_argument("--server", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
-    if args.shell:
-        t = threading.Thread(target=run_server, daemon=True)
-        t.start()
-        AdminShell().cmdloop()
-    else:
+    if args.server:
         run_server()
+    else:
+        menu_loop()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
