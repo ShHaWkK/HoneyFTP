@@ -919,25 +919,34 @@ class HoneyRealm(ftp.FTPRealm):
 server_thread = None
 server_running = False
 knock_ports = []
+reactor_started = False
 
 def run_server():
-    global knock_ports
+    """Run the twisted reactor and bind knock ports once."""
+    global knock_ports, reactor_started
     if not knock_ports:
         for p in KNOCK_SEQ:
             knock_ports.append(reactor.listenUDP(p, KnockProtocol(p)))
     logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
-    reactor.run(installSignalHandlers=0)
+    if not reactor_started:
+        reactor_started = True
+        reactor.run(installSignalHandlers=0)
 
 def start_server():
+    """Launch the reactor in a background thread if not already running."""
     global server_thread, server_running
     if server_running:
         print("Serveur déjà démarré")
         return
+    if reactor_started:
+        print("Reactor déjà arrêté - relance impossible dans ce processus")
+        return
+    server_running = True
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
-    server_running = True
 
 def _close_knocks():
+    """Close any UDP knock ports currently bound."""
     global knock_ports
     for port in knock_ports:
         try:
@@ -946,14 +955,20 @@ def _close_knocks():
             pass
     knock_ports = []
 
+def _shutdown():
+    """Stop UDP listeners then terminate the reactor."""
+    _close_knocks()
+    reactor.stop()
+
 def stop_server():
+    """Stop knock listeners and the reactor."""
     global server_running
     if not server_running:
         print("Serveur non démarré")
         return
-    reactor.callFromThread(_close_knocks)
-    reactor.callFromThread(reactor.stop)
-    server_thread.join()
+    reactor.callFromThread(_shutdown)
+    if server_thread:
+        server_thread.join()
     server_running = False
     _cleanup_pid()
 
