@@ -21,7 +21,7 @@ Fonctionnalités :
 """
 
 import os, sys, subprocess, shutil, uuid, random, logging, smtplib, tempfile
-import json, zipfile, atexit, base64, threading, argparse
+import json, zipfile, atexit, base64, threading, argparse, re
 from datetime import datetime, timedelta, timezone
 
 # 1) Bootstrap pip deps
@@ -237,6 +237,18 @@ STATS = {
     "cd": 0,
 }
 
+def get_next_session_id() -> str:
+    """Return the next incremental session ID (session1, session2, ...)."""
+    max_id = 0
+    if os.path.isdir(SESS_DIR):
+        for name in os.listdir(SESS_DIR):
+            m = re.search(r"session(\d+)", name)
+            if m:
+                num = int(m.group(1))
+                if num > max_id:
+                    max_id = num
+    return f"session{max_id + 1}"
+
 # Limite maximale d'espace disque pour le faux filesystem (env HONEYFTP_QUOTA_MB)
 QUOTA_BYTES = int(os.getenv("HONEYFTP_QUOTA_MB", "10")) * 1024 * 1024
 # Quota disque par session (50 Mo par défaut)
@@ -342,7 +354,7 @@ def is_tor_exit(ip: str) -> bool:
     return ip in TOR_CACHE["ips"]
 
 def create_honeytoken(ip: str, sess: str) -> str:
-    fn = f"secret_{uuid.uuid4().hex}.txt"
+    fn = f"secret_{sess}.txt"
     with open(os.path.join(ROOT_DIR, fn),"w") as f:
         f.write(f"session={sess}\nip={ip}\n")
     return fn
@@ -532,7 +544,7 @@ class HoneyFTP(ftp.FTP):
     def connectionMade(self):
         super().connectionMade()
         STATS["connections"] += 1
-        self.session = uuid.uuid4().hex
+        self.session = get_next_session_id()
         peer        = self.transport.getPeer().host
         self.logf   = open(os.path.join(SESS_DIR,f"{self.session}.log"),"a")
         self.start, self.count = datetime.now(timezone.utc), 0
@@ -989,9 +1001,15 @@ def list_sessions():
     if not os.path.isdir(SESS_DIR):
         print("Aucune session")
         return
+    sess = []
     for f in os.listdir(SESS_DIR):
-        if f.endswith('.log'):
-            print(f[:-4])
+        if f.endswith('.log') and '.rename' not in f:
+            name = f[:-4]
+            m = re.search(r'session(\d+)', name)
+            idx = int(m.group(1)) if m else 0
+            sess.append((idx, name))
+    for _, name in sorted(sess):
+        print(name)
 
 def show_session(sid=None):
     if sid is None:
