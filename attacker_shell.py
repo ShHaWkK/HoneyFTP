@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # coding: utf-8
 """Client interactif FTPS pour le honeypot HoneyFTP.
 
@@ -16,6 +17,22 @@ from ftplib import FTP_TLS, error_perm
 from cmd import Cmd
 from pathlib import Path
 from typing import Optional
+
+try:
+    from rich import print as rprint
+    from rich.progress import Progress
+except Exception:  # install rich if missing
+    import subprocess, sys
+    subprocess.check_call([
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--quiet",
+        "rich",
+    ])
+    from rich import print as rprint
+    from rich.progress import Progress
 
 # Comptes supportés
 ACCOUNTS = {
@@ -84,6 +101,7 @@ Ouvre la connexion FTPS (avec port-knocking automatique)."""
             print(f"Erreur connexion : {e}")
             self.ftp = None
             return
+        print("Knock OK, FTPS démarré")
         self.logged = False
 
     def do_login(self, arg):
@@ -100,6 +118,7 @@ Authentifie l'utilisateur (anonymous par défaut)."""
             self.ftp.prot_p()
             self.logged = True
             print(f"< {resp}")
+            print("230 Login OK")
         except error_perm as e:
             print(f"Authentification échouée : {e}")
 
@@ -131,7 +150,8 @@ Liste les fichiers du répertoire courant ou indiqué."""
         path = arg or "."
         try:
             for name in self.ftp.nlst(path):
-                print(name)
+                icon = "\U0001F4C1" if "." not in name else "\U0001F4C4"
+                rprint(f"{icon} {name}")
         except Exception as e:
             print(f"Erreur NLST : {e}")
 
@@ -165,8 +185,13 @@ Liste les fichiers du répertoire courant ou indiqué."""
         src = parts[0]
         dst = Path(parts[1]) if len(parts) > 1 else Path(src)
         try:
-            with open(dst, "wb") as f:
-                self.ftp.retrbinary(f"RETR {src}", f.write)
+            size = self.ftp.size(src) or 0
+            with open(dst, "wb") as f, Progress() as p:
+                task = p.add_task(f"GET {src}", total=size or None)
+                def cb(data):
+                    f.write(data)
+                    p.update(task, advance=len(data))
+                self.ftp.retrbinary(f"RETR {src}", cb)
             print(f"Téléchargé vers {dst}")
         except Exception as e:
             print(f"Erreur RETR : {e}")
@@ -191,6 +216,38 @@ Liste les fichiers du répertoire courant ou indiqué."""
         except Exception as e:
             print(f"Erreur STOR : {e}")
 
+    def do_cat(self, arg):
+        """cat <fichier> - affiche le contenu texte"""
+        if not self._ensure_login():
+            return
+        if not arg:
+            print("Usage: cat <fichier>")
+            return
+        buf = bytearray()
+        try:
+            self.ftp.retrbinary(f"RETR {arg}", buf.extend)
+            print(buf.decode("utf-8", errors="replace"))
+        except Exception as e:
+            print(f"Erreur CAT : {e}")
+
+    def do_grep(self, arg):
+        """grep <motif> <fichier>"""
+        if not self._ensure_login():
+            return
+        parts = arg.split()
+        if len(parts) < 2:
+            print("Usage: grep <motif> <fichier>")
+            return
+        pat, src = parts[0], parts[1]
+        buf = bytearray()
+        try:
+            self.ftp.retrbinary(f"RETR {src}", buf.extend)
+            for line in buf.decode("utf-8", errors="ignore").splitlines():
+                if pat in line:
+                    rprint(line)
+        except Exception as e:
+            print(f"Erreur GREP : {e}")
+
     def do_site(self, arg):
         """site <commande>
 Envoie une commande SITE arbitraire."""
@@ -213,6 +270,17 @@ Envoie une commande brute non gérée autrement."""
         except Exception as e:
             print(f"Erreur : {e}")
 
+    # --- autocomplétions dynamiques ---------------------------------------
+    def _complete_remote(self, text):
+        if not self.ftp or not self.logged:
+            return []
+        try:
+            return [n for n in self.ftp.nlst() if n.startswith(text)]
+        except Exception:
+            return []
+
+    complete_ls = complete_cd = complete_get = complete_cat = complete_grep = _complete_remote
+
     def do_quit(self, arg):
         """Quitte le shell."""
         self.do_close(arg)
@@ -220,12 +288,60 @@ Envoie une commande brute non gérée autrement."""
         return True
 
 
+def run_web():
+    """Start a very small Flask dashboard."""
+    try:
+        from flask import Flask, render_template_string, send_from_directory
+    except Exception:
+        import subprocess, sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "flask"])
+        from flask import Flask, render_template_string, send_from_directory
+
+    base = Path(__file__).resolve().parent
+    sess_dir = base / "sessions"
+    op_log = base / "operations.log"
+
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        sessions = [p.stem.replace("stats_", "") for p in sess_dir.glob("stats_*.json")]
+        logs = [p.name for p in sess_dir.glob("*.log")]
+        counts = {}
+        if op_log.exists():
+            for line in op_log.read_text().splitlines():
+                parts = line.split()
+                if len(parts) > 1:
+                    act = parts[1]
+                    counts[act] = counts.get(act, 0) + 1
+        tmpl = """
+        <h1>HoneyFTP Dashboard</h1>
+        <h2>Sessions</h2>
+        <ul>{% for s in sessions %}<li>{{s}}</li>{% endfor %}</ul>
+        <h2>Logs</h2>
+        <ul>{% for l in logs %}<li><a href='/log/{{l}}'>{{l}}</a></li>{% endfor %}</ul>
+        <h2>Attaques</h2>
+        <pre>{{counts}}</pre>
+        """
+        return render_template_string(tmpl, sessions=sessions, logs=logs, counts=counts)
+
+    @app.route("/log/<path:fn>")
+    def getlog(fn):
+        return send_from_directory(sess_dir, fn)
+
+    app.run(host="0.0.0.0", port=5000)
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("host", nargs="?", default="127.0.0.1")
+    p.add_argument("host", nargs="?", default="192.168.100.51")
     p.add_argument("port", nargs="?", type=int, default=2121)
+    p.add_argument("--mode", choices=["cli", "web"], default="cli")
     args = p.parse_args()
-    FtpShell(args.host, args.port).cmdloop()
+    if args.mode == "web":
+        run_web()
+    else:
+        FtpShell(args.host, args.port).cmdloop()
 
 
 if __name__ == "__main__":
