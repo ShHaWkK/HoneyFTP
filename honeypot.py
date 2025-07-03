@@ -891,12 +891,57 @@ class HoneyRealm(ftp.FTPRealm):
                 return iface, HoneyShell(user), lambda: None
         raise NotImplementedError("Only IFTPShell interface is supported")
 
-# 10) Main
-def main():
+# 10) Admin shell
+import threading, cmd, argparse
+
+class AdminShell(cmd.Cmd):
+    intro = "HoneyFTP admin shell. type help or ?"
+    prompt = "honeypot> "
+
+    def do_sessions(self, arg):
+        """List active session IDs"""
+        if os.path.isdir(SESS_DIR):
+            for f in os.listdir(SESS_DIR):
+                if f.endswith('.log'):
+                    print(f[:-4])
+
+    def do_show(self, sid):
+        """show <id> - display full session log"""
+        path = os.path.join(SESS_DIR, f"{sid}.log")
+        try:
+            with open(path) as f:
+                print(f.read())
+        except FileNotFoundError:
+            print("not found")
+
+    def do_attacks(self, arg):
+        """Show attack statistics"""
+        for k, v in STATS.items():
+            print(f"{k}: {v}")
+
+    def do_quit(self, arg):
+        """Quit shell and stop server"""
+        reactor.callFromThread(reactor.stop)
+        return True
+
+
+def run_server():
     for p in KNOCK_SEQ:
         reactor.listenUDP(p, KnockProtocol(p))
     logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
     reactor.run()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--shell", action="store_true", help="start admin shell")
+    args = ap.parse_args()
+    if args.shell:
+        t = threading.Thread(target=run_server, daemon=True)
+        t.start()
+        AdminShell().cmdloop()
+    else:
+        run_server()
 
 if __name__=="__main__":
     main()
