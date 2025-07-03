@@ -16,6 +16,8 @@ from ftplib import FTP_TLS, error_perm
 from cmd import Cmd
 from pathlib import Path
 from typing import Optional
+from rich import print as rprint
+from rich.progress import Progress
 
 # Comptes supportés
 ACCOUNTS = {
@@ -84,6 +86,7 @@ Ouvre la connexion FTPS (avec port-knocking automatique)."""
             print(f"Erreur connexion : {e}")
             self.ftp = None
             return
+        print("Knock OK, FTPS démarré")
         self.logged = False
 
     def do_login(self, arg):
@@ -100,6 +103,7 @@ Authentifie l'utilisateur (anonymous par défaut)."""
             self.ftp.prot_p()
             self.logged = True
             print(f"< {resp}")
+            print("230 Login OK")
         except error_perm as e:
             print(f"Authentification échouée : {e}")
 
@@ -131,7 +135,8 @@ Liste les fichiers du répertoire courant ou indiqué."""
         path = arg or "."
         try:
             for name in self.ftp.nlst(path):
-                print(name)
+                icon = "\U0001F4C1" if "." not in name else "\U0001F4C4"
+                rprint(f"{icon} {name}")
         except Exception as e:
             print(f"Erreur NLST : {e}")
 
@@ -165,8 +170,13 @@ Liste les fichiers du répertoire courant ou indiqué."""
         src = parts[0]
         dst = Path(parts[1]) if len(parts) > 1 else Path(src)
         try:
-            with open(dst, "wb") as f:
-                self.ftp.retrbinary(f"RETR {src}", f.write)
+            size = self.ftp.size(src) or 0
+            with open(dst, "wb") as f, Progress() as p:
+                task = p.add_task(f"GET {src}", total=size or None)
+                def cb(data):
+                    f.write(data)
+                    p.update(task, advance=len(data))
+                self.ftp.retrbinary(f"RETR {src}", cb)
             print(f"Téléchargé vers {dst}")
         except Exception as e:
             print(f"Erreur RETR : {e}")
@@ -191,6 +201,38 @@ Liste les fichiers du répertoire courant ou indiqué."""
         except Exception as e:
             print(f"Erreur STOR : {e}")
 
+    def do_cat(self, arg):
+        """cat <fichier> - affiche le contenu texte"""
+        if not self._ensure_login():
+            return
+        if not arg:
+            print("Usage: cat <fichier>")
+            return
+        buf = bytearray()
+        try:
+            self.ftp.retrbinary(f"RETR {arg}", buf.extend)
+            print(buf.decode("utf-8", errors="replace"))
+        except Exception as e:
+            print(f"Erreur CAT : {e}")
+
+    def do_grep(self, arg):
+        """grep <motif> <fichier>"""
+        if not self._ensure_login():
+            return
+        parts = arg.split()
+        if len(parts) < 2:
+            print("Usage: grep <motif> <fichier>")
+            return
+        pat, src = parts[0], parts[1]
+        buf = bytearray()
+        try:
+            self.ftp.retrbinary(f"RETR {src}", buf.extend)
+            for line in buf.decode("utf-8", errors="ignore").splitlines():
+                if pat in line:
+                    rprint(line)
+        except Exception as e:
+            print(f"Erreur GREP : {e}")
+
     def do_site(self, arg):
         """site <commande>
 Envoie une commande SITE arbitraire."""
@@ -212,6 +254,17 @@ Envoie une commande brute non gérée autrement."""
             print(f"< {resp}")
         except Exception as e:
             print(f"Erreur : {e}")
+
+    # --- autocomplétions dynamiques ---------------------------------------
+    def _complete_remote(self, text):
+        if not self.ftp or not self.logged:
+            return []
+        try:
+            return [n for n in self.ftp.nlst() if n.startswith(text)]
+        except Exception:
+            return []
+
+    complete_ls = complete_cd = complete_get = complete_cat = complete_grep = _complete_remote
 
     def do_quit(self, arg):
         """Quitte le shell."""
