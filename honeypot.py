@@ -922,7 +922,7 @@ knock_ports = []
 reactor_started = False
 
 def run_server():
-    """Run the twisted reactor and bind knock ports once."""
+    """Run the Twisted reactor and bind knock ports once."""
     global knock_ports, reactor_started
     if not knock_ports:
         for p in KNOCK_SEQ:
@@ -938,6 +938,7 @@ def start_server():
     if server_running:
         print("Serveur déjà démarré")
         return
+    # Guard: Twisted reactor cannot be restarted once stopped
     if reactor_started:
         print("Reactor déjà arrêté - relance impossible dans ce processus")
         return
@@ -947,6 +948,7 @@ def start_server():
 
 def _close_knocks():
     """Close any UDP knock ports currently bound."""
+    # Guard: prevents rebinding by clearing the global knock_ports list
     global knock_ports
     for port in knock_ports:
         try:
@@ -966,6 +968,7 @@ def stop_server():
     if not server_running:
         print("Serveur non démarré")
         return
+    # Guard: stopListening on ports before halting the reactor
     reactor.callFromThread(_shutdown)
     if server_thread:
         server_thread.join()
