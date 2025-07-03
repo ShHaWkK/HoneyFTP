@@ -148,6 +148,19 @@ Le menu interactif accepte les valeurs **0 à 20** :
 
 L'option `18` quitte le client.
 
+## Commandes de gestion
+
+Un script `manage.py` centralise les différentes actions :
+
+```bash
+./manage.py run --mode cli   # lancer le shell FTP interactif
+./manage.py run --mode web   # démarrer le tableau de bord Flask
+./manage.py honeypot         # serveur FTPS avec shell admin
+```
+
+Le mode *web* affiche la liste des sessions, les derniers logs et un
+récapitulatif des attaques enregistrées.
+
 ## Améliorations possibles
 
 - Gestion d'utilisateurs avec quotas individuels

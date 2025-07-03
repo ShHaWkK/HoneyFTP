@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # coding: utf-8
 """Client interactif FTPS pour le honeypot HoneyFTP.
 
@@ -8,6 +9,28 @@ ou ``raw`` pour envoyer des commandes arbitraires.
 La séquence de port-knocking est envoyée automatiquement lors de la
 connexion.
 """
+
+import subprocess
+import sys
+
+def ensure(pkg):
+    try:
+        __import__(pkg)
+    except ImportError:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--root-user-action=ignore", pkg],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError:
+            pass
+        try:
+            __import__(pkg)
+        except ImportError:
+            print(f"[!] unable to install {pkg}")
+
+ensure("rich")
 
 import ssl
 import socket
@@ -275,10 +298,69 @@ Envoie une commande brute non gérée autrement."""
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("host", nargs="?", default="127.0.0.1")
+    p.add_argument("host", nargs="?", default="192.168.100.51")
     p.add_argument("port", nargs="?", type=int, default=2121)
+    p.add_argument("--mode", choices=["cli", "web"], default="cli")
     args = p.parse_args()
-    FtpShell(args.host, args.port).cmdloop()
+
+    if args.mode == "cli":
+        FtpShell(args.host, args.port).cmdloop()
+    else:
+        ensure("flask")
+        from flask import Flask, render_template_string
+        app = Flask(__name__)
+        base = Path(__file__).resolve().parent
+        sess_dir = base / "sessions"
+        op_log = base / "operations.log"
+
+        def parse_stats():
+            stats = {
+                "uploads": 0,
+                "downloads": 0,
+                "deletes": 0,
+                "renames": 0,
+                "ls": 0,
+                "cd": 0,
+            }
+            if op_log.exists():
+                with open(op_log) as f:
+                    for line in f:
+                        for k in stats:
+                            if k.upper() in line.upper():
+                                stats[k] += 1
+            return stats
+
+        @app.route("/")
+        def index():
+            sessions = []
+            logs = {}
+            if sess_dir.is_dir():
+                for fp in sess_dir.glob("*.log"):
+                    sid = fp.stem
+                    sessions.append(sid)
+                    try:
+                        with open(fp) as f:
+                            logs[sid] = f.read().splitlines()[-10:]
+                    except Exception:
+                        logs[sid] = []
+            stats = parse_stats()
+            tpl = """
+            <h1>HoneyFTP Dashboard</h1>
+            <h2>Sessions</h2>
+            <ul>{% for s in sessions %}<li>{{s}}</li>{% endfor %}</ul>
+            <h2>Logs</h2>
+            {% for s,l in logs.items() %}
+            <h3>{{s}}</h3>
+            <pre>{{ '\n'.join(l) }}</pre>
+            {% endfor %}
+            <h2>Attaques</h2>
+            <ul>
+            {% for k,v in stats.items() %}<li>{{k}}: {{v}}</li>{% endfor %}
+            </ul>
+            """
+            return render_template_string(tpl, sessions=sessions, logs=logs, stats=stats)
+
+        app.run(host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":
