@@ -50,7 +50,7 @@ for pkg, imp in [
     ("rich", None),
     ("Pillow", "PIL"),
     ("openpyxl", None),
-    ("fpdf2", "fpdf"),
+    ("fpdf", None),
 ]:
     ensure(pkg, imp)
 
@@ -127,8 +127,12 @@ logging.basicConfig(level=logging.INFO, handlers=handlers)
 def create_lure_files():
     from PIL import Image
     from openpyxl import Workbook
-    from fpdf import FPDF
     import io
+    try:
+        from fpdf import FPDF
+    except Exception as e:
+        FPDF = None
+        logging.warning("PDF library unavailable: %s", e)
 
     files = {
         "passwords.txt": b"admin:admin",
@@ -161,13 +165,16 @@ def create_lure_files():
         ).encode("utf-8"),
     }
 
-    buf = io.BytesIO()
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", size=12)
-    pdf.cell(40, 10, "Manual")
-    pdf.output(buf)
-    files["docs/manual.pdf"] = buf.getvalue()
+    if FPDF:
+        try:
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Helvetica", size=12)
+            pdf.cell(40, 10, "Manual")
+            data = pdf.output(dest="S").encode("latin1")
+            files["docs/manual.pdf"] = data
+        except Exception as e:
+            logging.warning("Failed to generate PDF lure: %s", e)
 
     buf = io.BytesIO()
     Image.new("RGB", (1, 1), (255, 0, 0)).save(buf, format="JPEG")
@@ -938,8 +945,9 @@ def list_sessions():
         if f.endswith('.log'):
             print(f[:-4])
 
-def show_session():
-    sid = input("ID de session > ").strip()
+def show_session(sid=None):
+    if sid is None:
+        sid = input("ID de session > ").strip()
     path = os.path.join(SESS_DIR, f"{sid}.log")
     try:
         with open(path) as f:
@@ -978,7 +986,8 @@ def menu_loop():
         elif choice == "4":
             list_sessions()
         elif choice == "5":
-            show_session()
+            sid = input("ID de session > ").strip()
+            show_session(sid)
         elif choice == "6":
             show_stats()
         elif choice == "0":
