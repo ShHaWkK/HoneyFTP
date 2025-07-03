@@ -7,6 +7,13 @@ against the Tor exit list, detects brute-force attacks, and creates realistic
 lure files with canary triggers. Sensitive actions can generate alerts via
 Slack or SMTP. Each connection has its own session log for forensic analysis.
 
+Un honeypot FTP à haute interaction émule un service FTP/FTPS complet afin que
+les attaquants puissent téléverser, télécharger et manipuler des fichiers.
+Chaque commande est enregistrée et certains fichiers servent de honeytokens,
+envoyant des alertes lorsqu’ils sont consultés. Ce dépôt génère des fichiers
+leurres, détecte les connexions par force brute et archive des statistiques par
+session.
+
 ## Fonctionnalités
 
 - *Port-knocking* UDP pour activer le serveur réel

@@ -21,6 +21,7 @@ Fonctionnalités :
 """
 
 import os, sys, subprocess, shutil, uuid, random, logging, smtplib, tempfile
+import json, zipfile, atexit, base64
 from datetime import datetime, timedelta, timezone
 
 # 1) Bootstrap pip deps
@@ -46,6 +47,10 @@ for pkg, imp in [
     ("cryptography", None),
     ("pyOpenSSL", "OpenSSL"),
     ("colorama", None),
+    ("rich", None),
+    ("Pillow", "PIL"),
+    ("openpyxl", None),
+    ("fpdf2", "fpdf"),
 ]:
     ensure(pkg, imp)
 
@@ -69,10 +74,19 @@ QUAR_DIR = os.path.join(BASE, "quarantine")
 SESS_DIR = os.path.join(BASE, "sessions")
 LOG_FILE = os.path.join(BASE, "honeypot.log")
 OP_LOG   = os.path.join(BASE, "operations.log")
+PID_FILE = os.path.join(BASE, "honeypot.pid")
 VERSION  = "1.1"
 SERVER_START = datetime.now(timezone.utc)
 for d in (ROOT_DIR, QUAR_DIR, SESS_DIR):
     os.makedirs(d, exist_ok=True)
+
+def _cleanup_pid():
+    try:
+        os.remove(PID_FILE)
+    except OSError:
+        pass
+
+atexit.register(_cleanup_pid)
 
 # 3) Logging central
 color_init()
@@ -110,16 +124,93 @@ handlers.append(sh)
 logging.basicConfig(level=logging.INFO, handlers=handlers)
 
 # 4) Leurres initiaux
-for rel, content in {
-    "passwords.txt":   "admin:admin",
-    "secrets/ssh_key": "FAKE_SSH_KEY",
-    "docs/readme.txt": "Welcome to the FTP server",
-    "uploads/.keep":  "",
-}.items():
-    fp = os.path.join(ROOT_DIR, rel)
-    os.makedirs(os.path.dirname(fp), exist_ok=True)
-    if not os.path.exists(fp):
-        with open(fp, "w") as f: f.write(content)
+def create_lure_files():
+    from PIL import Image
+    from openpyxl import Workbook
+    from fpdf import FPDF
+    import io
+
+    files = {
+        "passwords.txt": b"admin:admin",
+        "secrets/ssh_key": b"FAKE_SSH_KEY",
+        "docs/readme.txt": b"Welcome to the FTP server",
+        "web/index.html": b"<html><body>Welcome</body></html>",
+        "logs/syslog": b"system boot\n",
+        # Liste d'employés plus complète pour rendre le leurre crédible
+        "hr/employes.csv": (
+            "id,name,email,dept,title,phone,hire_date\n"
+            "1,Alice Smith,alice.smith@example.com,Finance,CFO,+1-555-0100,2018-01-12\n"
+            "2,Bob Jones,bob.jones@example.com,IT,System Administrator,+1-555-0101,2019-03-07\n"
+            "3,Charlie Ray,charlie.ray@example.com,HR,HR Manager,+1-555-0102,2017-06-21\n"
+            "4,Diana Prince,diana.prince@example.com,Marketing,Lead,+1-555-0103,2020-09-30\n"
+            "5,Eric Yuan,eric.yuan@example.com,Engineering,Developer,+1-555-0104,2016-11-11\n"
+            "6,Francis Bean,francis.bean@example.com,Sales,Account Exec,+1-555-0105,2021-05-19\n"
+            "7,Gwen Stark,gwen.stark@example.com,Support,Technician,+1-555-0106,2015-02-14\n"
+            "8,Hugh Grant,hugh.grant@example.com,Finance,Accountant,+1-555-0107,2018-12-01\n"
+            "9,Ivy Chen,ivy.chen@example.com,IT,DevOps,+1-555-0108,2019-07-23\n"
+            "10,John Doe,john.doe@example.com,Management,CEO,+1-555-0109,2014-04-04\n"
+        ).encode("utf-8"),
+        "docs/README.md": b"Internal documentation\n",
+        # Les identifiants incluent l'adresse du serveur SSH leurre
+        "credentials.json": (
+            "{\n"
+            "  \"user\": \"admin\",\n"
+            "  \"pass\": \"secret\",\n"
+            "  \"server\": \"SSH 192.168.100.51:2224\"\n"
+            "}"
+        ).encode("utf-8"),
+    }
+
+    buf = io.BytesIO()
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    pdf.cell(40, 10, "Manual")
+    pdf.output(buf)
+    files["docs/manual.pdf"] = buf.getvalue()
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1), (255, 0, 0)).save(buf, format="JPEG")
+    files["images/photo.jpg"] = buf.getvalue()
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1), (0, 255, 0)).save(buf, format="PNG")
+    files["public/images/confidentiel.png"] = buf.getvalue()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("logs.txt", "log")
+    files["backups/backup.zip"] = buf.getvalue()
+    files["backups/logs_2025-07-04.zip"] = buf.getvalue()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["ID", "Value"])
+    ws.append([1, 100])
+    buf = io.BytesIO()
+    wb.save(buf)
+    files["finance/Q3_Report.xlsx"] = buf.getvalue()
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    priv = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+    files["it/ssh_keys/id_rsa"] = priv
+    files["aws_keys.pem"] = priv
+
+    files["uploads/.keep"] = b""
+
+    for rel, data in files.items():
+        fp = os.path.join(ROOT_DIR, rel)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        if not os.path.exists(fp):
+            mode = "wb" if isinstance(data, (bytes, bytearray)) else "w"
+            with open(fp, mode) as f:
+                f.write(data)
+
+create_lure_files()
 
 failed_attempts = {}
 dynamic_items   = []
@@ -131,10 +222,12 @@ STATS = {
     "downloads": 0,
     "deletes": 0,
     "renames": 0,
+    "ls": 0,
+    "cd": 0,
 }
 
-# Limite maximale d'espace disque pour le faux filesystem (10 Mo)
-QUOTA_BYTES = 10 * 1024 * 1024
+# Limite maximale d'espace disque pour le faux filesystem (env HONEYFTP_QUOTA_MB)
+QUOTA_BYTES = int(os.getenv("HONEYFTP_QUOTA_MB", "10")) * 1024 * 1024
 
 # 5) Génération du certificat TLS
 KEY_FILE = os.path.join(ROOT_DIR, "server.key")
@@ -180,7 +273,12 @@ from twisted.python import filepath
 TOR_LIST   = "https://check.torproject.org/torbulkexitlist"
 BRUTEF_THR = 5
 DELAY_SEC  = 2
-CANARY     = {"passwords.txt","secrets/ssh_key"}
+CANARY     = {
+    "passwords.txt",
+    "secrets/ssh_key",
+    "credentials.json",
+    "aws_keys.pem",
+}
 FORBID     = {"secrets"}        # supprimer un répertoire "secrets" déclenche alerta
 PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
 KNOCK_SEQ  = [4020, 4021, 4022]
@@ -248,13 +346,16 @@ def create_user_lure(user: str) -> str:
         pass
     return fn
 
-def validate_path(rel: str) -> str:
-    """Valide un chemin fourni par un client et retourne le chemin absolu"""
-    rel = rel.lstrip("/")
-    abs_path = os.path.abspath(os.path.join(ROOT_DIR, rel))
+def validate_path(rel: str, cwd=None):
+    """Validate a client-supplied path taking the current directory into account."""
+    try:
+        segs = ftp.toSegments(cwd or [], rel)
+    except Exception:
+        raise ValueError("Invalid path")
+    abs_path = os.path.abspath(os.path.join(ROOT_DIR, *segs))
     if not abs_path.startswith(os.path.abspath(ROOT_DIR)):
         raise ValueError("Invalid path")
-    return abs_path
+    return abs_path, "/".join(segs)
 
 def disk_usage(path: str) -> int:
     """Retourne la taille totale (en octets) d'un répertoire."""
@@ -268,22 +369,42 @@ def disk_usage(path: str) -> int:
                 pass
     return total
 
+def finalize_session(sess: str, start: datetime, dls=0, ups=0, cds=0, rns=0):
+    """Archive logs and stats for a session"""
+    end = datetime.now(timezone.utc)
+    stats_path = os.path.join(SESS_DIR, f"stats_{sess}.json")
+    data = {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "downloads": dls,
+        "uploads": ups,
+        "cd": cds,
+        "rename": rns,
+    }
+    try:
+        with open(stats_path, "w") as f:
+            json.dump(data, f)
+        zpath = os.path.join(SESS_DIR, f"session_{sess}.zip")
+        with zipfile.ZipFile(zpath, "w") as z:
+            z.write(stats_path, os.path.basename(stats_path))
+            slog = os.path.join(SESS_DIR, f"{sess}.log")
+            if os.path.exists(slog):
+                z.write(slog, "session.log")
+        alert(f"Session {sess} archived")
+    except Exception:
+        pass
+
 # Port-knocking logic
 ftp_started = False
 knock_state = {}
 
 
-class DictChecker:
-    """Simple checker accepting plain username/password strings."""
+class AcceptAllChecker:
+    """Checker accepting any username/password and returning the username."""
     credentialInterfaces = (credentials.IUsernamePassword,)
 
-    def __init__(self, users):
-        self.users = users
-
     def requestAvatarId(self, creds):
-        if self.users.get(creds.username) == creds.password:
-            return defer.succeed(creds.username)
-        return defer.fail(error.UnauthorizedLogin())
+        return defer.succeed(creds.username)
 class KnockProtocol(DatagramProtocol):
     def __init__(self, port):
         self.port = port
@@ -307,13 +428,8 @@ def start_ftp():
     ftp_started = True
     realm = HoneyRealm(ROOT_DIR)
     p     = portal.Portal(realm)
-    # Use a simple dictionary-based checker so we can keep credentials as
-    # strings.  This avoids the byte-vs-str mismatch in Twisted's built-in
-    # checker which caused logins to fail.
-    p.registerChecker(DictChecker({
-        "attacker": "secret",
-        "ftpman": "ftpman",
-    }))
+    # Accept any credentials so we can observe attempts
+    p.registerChecker(AcceptAllChecker())
     p.registerChecker(AllowAnonymousAccess())
     ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
     def _listen_ssl(port, factory, *a, **kw):
@@ -326,6 +442,11 @@ def start_ftp():
     factory.passivePortRange = port_range
     endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(factory)
     logging.info("Honeypot FTPS listening on port %s", PORT)
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
 
 def randomize_fs(max_dirs=3, max_files=2, max_total=50):
     global dynamic_items
@@ -378,16 +499,18 @@ class HoneyShell(ftp.FTPShell):
         rel = "/".join(path)
         if rel in CANARY:
             alert(f"CANARY READ {rel} by {self.avatarId}")
-        try:
-            validate_path(rel)
-        except ValueError:
-            return defer.fail(FileNotFoundError(rel))
         return super().openForReading(path)
 
     def ftp_CWD(self, path):
         if path.startswith(".."):
             self.logf.write(f"CWD {path}\n")
+            log_operation(f"CWD {path} by {self.avatarId}")
+            STATS["cd"] += 1
+            self.protocol.s_cd += 1 if hasattr(self, 'protocol') else 0
             return ftp.REQ_FILE_ACTN_COMPLETED_OK,
+        log_operation(f"CWD {path} by {self.avatarId}")
+        STATS["cd"] += 1
+        self.protocol.s_cd += 1 if hasattr(self, 'protocol') else 0
         return super().ftp_CWD(path)
 
 # 8) Protocol
@@ -399,6 +522,10 @@ class HoneyFTP(ftp.FTP):
         peer        = self.transport.getPeer().host
         self.logf   = open(os.path.join(SESS_DIR,f"{self.session}.log"),"a")
         self.start, self.count = datetime.now(timezone.utc), 0
+        self.s_downloads = 0
+        self.s_uploads = 0
+        self.s_cd = 0
+        self.s_ren = 0
         logging.info("CONNECT %s session=%s", peer, self.session)
         if is_tor_exit(peer):
             alert(f"Tor exit node: {peer}")
@@ -410,6 +537,14 @@ class HoneyFTP(ftp.FTP):
         try: os.remove(os.path.join(ROOT_DIR,self.token))
         except: pass
         self.logf.close()
+        finalize_session(
+            self.session,
+            self.start,
+            self.s_downloads,
+            self.s_uploads,
+            self.s_cd,
+            self.s_ren,
+        )
         super().connectionLost(reason)
 
     def ftp_USER(self, u):
@@ -421,10 +556,15 @@ class HoneyFTP(ftp.FTP):
 
     def ftp_PASS(self, pw):
         peer = self.transport.getPeer().host
-        if failed_attempts.get(peer,0) >= BRUTEF_THR:
+        attempts = failed_attempts.get(peer, 0)
+        if attempts >= BRUTEF_THR:
+            delay = DELAY_SEC * (2 ** (attempts - BRUTEF_THR))
             d = defer.Deferred()
-            reactor.callLater(DELAY_SEC, d.callback,
-                              (ftp.RESPONSE[ftp.AUTH_FAILED][0],))
+            reactor.callLater(
+                delay,
+                d.callback,
+                (ftp.RESPONSE[ftp.AUTH_FAILURE][0],),
+            )
             return d
         logging.info("PASS %s %s %s", peer, self.username, pw)
         self.logf.write(f"PASS {pw}\n")
@@ -447,14 +587,14 @@ class HoneyFTP(ftp.FTP):
     def ftp_RNFR(self, fn):
         peer = self.transport.getPeer().host
         try:
-            old = validate_path(fn)
+            old, rel = validate_path(fn, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
-        self._old = os.path.relpath(old, ROOT_DIR)
-        logging.info("RNFR %s %s", peer, old)
+        self._old = rel
+        logging.info("RNFR %s %s", peer, rel)
         with open(os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a") as rl:
-            rl.write(f"RNFR {old}\n")
+            rl.write(f"RNFR {rel}\n")
         log_operation(f"RNFR {old} from {peer} session={self.session}")
         self.sendLine("350 Ready for RNTO")
         return
@@ -463,11 +603,10 @@ class HoneyFTP(ftp.FTP):
         peer = self.transport.getPeer().host
         old_rel = getattr(self, "_old", None)
         try:
-            new_path = validate_path(new)
+            new_path, new_rel = validate_path(new, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
-        new_rel = os.path.relpath(new_path, ROOT_DIR)
         old_path = os.path.join(ROOT_DIR, old_rel) if old_rel else None
         if not old_rel:
             self.sendLine("550 RNFR first")
@@ -481,6 +620,7 @@ class HoneyFTP(ftp.FTP):
                 rl.write(f"RNTO {old_rel}→{new_rel}\n")
             log_operation(f"RNTO {old_rel}->{new_rel} from {peer} session={self.session}")
             STATS["renames"] += 1
+            self.s_ren += 1
             self.sendLine("250 Rename done")
             return
         except Exception as e:
@@ -490,11 +630,10 @@ class HoneyFTP(ftp.FTP):
     def ftp_DELE(self, path):
         peer = self.transport.getPeer().host
         try:
-            abs_path = validate_path(path)
+            abs_path, rel = validate_path(path, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
-        rel = os.path.relpath(abs_path, ROOT_DIR)
         tag = f"{self.session}_{uuid.uuid4().hex}"
         dst = os.path.join(QUAR_DIR, tag)
         try:
@@ -512,7 +651,7 @@ class HoneyFTP(ftp.FTP):
 
     def ftp_MKD(self, path):
         try:
-            validate_path(path)
+            validate_path(path, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
@@ -522,7 +661,7 @@ class HoneyFTP(ftp.FTP):
 
     def ftp_RMD(self, path):
         try:
-            validate_path(path)
+            validate_path(path, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
@@ -533,35 +672,74 @@ class HoneyFTP(ftp.FTP):
     def ftp_RETR(self, path):
         peer = self.transport.getPeer().host
         try:
-            abs_path = validate_path(path)
+            abs_path, rel = validate_path(path, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
-        rel = os.path.relpath(abs_path, ROOT_DIR)
         if rel in CANARY:
             alert(f"CANARY RETR {rel} by {peer}")
         if rel == getattr(self, "token", None):
             logging.info("HONEYTOKEN DL %s session=%s", rel, self.session)
+            alert(f"HONEYTOKEN {rel} from {peer}")
         self.logf.write(f"RETR {rel}\n")
         log_operation(f"RETR {rel} by {peer} session={self.session}")
         STATS["downloads"] += 1
-        return super().ftp_RETR('/' + rel)
+        self.s_downloads += 1
+        return super().ftp_RETR(path)
 
     def ftp_STOR(self, path):
         peer = self.transport.getPeer().host
         try:
-            abs_path = validate_path(path)
+            abs_path, rel = validate_path(path, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
         if disk_usage(ROOT_DIR) >= QUOTA_BYTES:
             self.sendLine("552 Quota exceeded")
             return
-        rel = os.path.relpath(abs_path, ROOT_DIR)
         self.logf.write(f"STOR {rel}\n")
         log_operation(f"STOR {rel} by {peer} session={self.session}")
         STATS["uploads"] += 1
-        return super().ftp_STOR('/' + rel)
+        self.s_uploads += 1
+        return super().ftp_STOR(path)
+
+    def ftp_NLST(self, path):
+        peer = self.transport.getPeer().host
+        p = path or self.workingDirectory
+        try:
+            _, rel = validate_path(p, self.workingDirectory)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
+        self.logf.write(f"NLST {rel}\n")
+        log_operation(f"NLST {rel} by {peer} session={self.session}")
+        STATS["ls"] += 1
+        if "etc" in rel:
+            etc = os.path.join(ROOT_DIR, "etc")
+            os.makedirs(etc, exist_ok=True)
+            with open(os.path.join(etc, "passwd"), "w") as f:
+                f.write("root:x:0:0:root:/root:/bin/bash\n")
+            with open(os.path.join(etc, "shadow"), "w") as f:
+                f.write("root:*:18133:0:99999:7:::\n")
+        if "var/log" in rel:
+            d = os.path.join(ROOT_DIR, "var/log")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "syslog.1"), "w") as f:
+                f.write("Jan 1 info fake\n")
+        return super().ftp_NLST(path)
+
+    def ftp_STAT(self, path):
+        peer = self.transport.getPeer().host
+        try:
+            _, rel = validate_path(path, self.workingDirectory)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
+        if rel in CANARY:
+            alert(f"CANARY STAT {rel} by {peer}")
+        self.logf.write(f"STAT {rel}\n")
+        log_operation(f"STAT {rel} by {peer} session={self.session}")
+        return super().ftp_STAT(path)
 
     def ftp_SITE(self, params):
         parts = params.strip().split(" ",1)
@@ -681,7 +859,7 @@ class HoneyFTP(ftp.FTP):
         self.count+=1
         if self.count>20 and (datetime.now(timezone.utc)-self.start).total_seconds()<10:
             alert(f"Fast scan {peer}")
-            reactor.callLater(random.uniform(1,3), lambda:None)
+            reactor.callLater(random.uniform(2,5), lambda:None)
         return super().lineReceived(line)
 
 # 9) Factory & Realm
