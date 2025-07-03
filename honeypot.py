@@ -50,7 +50,7 @@ for pkg, imp in [
     ("rich", None),
     ("Pillow", "PIL"),
     ("openpyxl", None),
-    ("fpdf", None),
+    ("fpdf2", "fpdf"),
 ]:
     ensure(pkg, imp)
 
@@ -171,7 +171,11 @@ def create_lure_files():
             pdf.add_page()
             pdf.set_font("Helvetica", size=12)
             pdf.cell(40, 10, "Manual")
-            data = pdf.output(dest="S").encode("latin1")
+            data = pdf.output(dest="S")
+            if isinstance(data, str):
+                data = data.encode("latin1")
+            else:
+                data = bytes(data)
             files["docs/manual.pdf"] = data
         except Exception as e:
             logging.warning("Failed to generate PDF lure: %s", e)
@@ -235,6 +239,8 @@ STATS = {
 
 # Limite maximale d'espace disque pour le faux filesystem (env HONEYFTP_QUOTA_MB)
 QUOTA_BYTES = int(os.getenv("HONEYFTP_QUOTA_MB", "10")) * 1024 * 1024
+# Quota disque par session (50 Mo par défaut)
+SESSION_QUOTA = int(os.getenv("HONEYFTP_SESSION_QUOTA_MB", "50")) * 1024 * 1024
 
 # 5) Génération du certificat TLS
 KEY_FILE = os.path.join(ROOT_DIR, "server.key")
@@ -376,7 +382,7 @@ def disk_usage(path: str) -> int:
                 pass
     return total
 
-def finalize_session(sess: str, start: datetime, dls=0, ups=0, cds=0, rns=0):
+def finalize_session(sess: str, start: datetime, dls=0, ups=0, cds=0, rns=0, size=0):
     """Archive logs and stats for a session"""
     end = datetime.now(timezone.utc)
     stats_path = os.path.join(SESS_DIR, f"stats_{sess}.json")
@@ -387,6 +393,7 @@ def finalize_session(sess: str, start: datetime, dls=0, ups=0, cds=0, rns=0):
         "uploads": ups,
         "cd": cds,
         "rename": rns,
+        "upload_bytes": size,
     }
     try:
         with open(stats_path, "w") as f:
@@ -531,6 +538,7 @@ class HoneyFTP(ftp.FTP):
         self.start, self.count = datetime.now(timezone.utc), 0
         self.s_downloads = 0
         self.s_uploads = 0
+        self.s_bytes = 0
         self.s_cd = 0
         self.s_ren = 0
         logging.info("CONNECT %s session=%s", peer, self.session)
@@ -551,6 +559,7 @@ class HoneyFTP(ftp.FTP):
             self.s_uploads,
             self.s_cd,
             self.s_ren,
+            self.s_bytes,
         )
         super().connectionLost(reason)
 
@@ -701,14 +710,22 @@ class HoneyFTP(ftp.FTP):
         except ValueError:
             self.sendLine("550 Invalid path")
             return
-        if disk_usage(ROOT_DIR) >= QUOTA_BYTES:
+        if self.s_bytes >= SESSION_QUOTA or disk_usage(ROOT_DIR) >= QUOTA_BYTES:
             self.sendLine("552 Quota exceeded")
             return
         self.logf.write(f"STOR {rel}\n")
         log_operation(f"STOR {rel} by {peer} session={self.session}")
         STATS["uploads"] += 1
         self.s_uploads += 1
-        return super().ftp_STOR(path)
+        d = super().ftp_STOR(path)
+        def _update(res):
+            try:
+                self.s_bytes += os.path.getsize(abs_path)
+            except Exception:
+                pass
+            return res
+        d.addCallback(_update)
+        return d
 
     def ftp_NLST(self, path):
         peer = self.transport.getPeer().host
@@ -901,10 +918,13 @@ class HoneyRealm(ftp.FTPRealm):
 # 10) Server thread helpers
 server_thread = None
 server_running = False
+knock_ports = []
 
 def run_server():
-    for p in KNOCK_SEQ:
-        reactor.listenUDP(p, KnockProtocol(p))
+    global knock_ports
+    if not knock_ports:
+        for p in KNOCK_SEQ:
+            knock_ports.append(reactor.listenUDP(p, KnockProtocol(p)))
     logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
     reactor.run(installSignalHandlers=0)
 
@@ -917,11 +937,21 @@ def start_server():
     server_thread.start()
     server_running = True
 
+def _close_knocks():
+    global knock_ports
+    for port in knock_ports:
+        try:
+            port.stopListening()
+        except Exception:
+            pass
+    knock_ports = []
+
 def stop_server():
     global server_running
     if not server_running:
         print("Serveur non démarré")
         return
+    reactor.callFromThread(_close_knocks)
     reactor.callFromThread(reactor.stop)
     server_thread.join()
     server_running = False
