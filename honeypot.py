@@ -133,6 +133,9 @@ STATS = {
     "renames": 0,
 }
 
+# Limite maximale d'espace disque pour le faux filesystem (10 Mo)
+QUOTA_BYTES = 10 * 1024 * 1024
+
 # 5) Génération du certificat TLS
 KEY_FILE = os.path.join(ROOT_DIR, "server.key")
 CRT_FILE = os.path.join(ROOT_DIR, "server.crt")
@@ -213,12 +216,19 @@ def log_operation(msg: str):
     except Exception:
         pass
 
+TOR_CACHE = {"ts": None, "ips": set()}
+
 def is_tor_exit(ip: str) -> bool:
-    try:
-        r = requests.get(TOR_LIST, timeout=5)
-        return ip in r.text.splitlines()
-    except:
-        return False
+    """Vérifie si l'IP provient d'un noeud de sortie Tor (cache 1h)."""
+    now = datetime.now(timezone.utc)
+    if not TOR_CACHE["ts"] or (now - TOR_CACHE["ts"]) > timedelta(hours=1):
+        try:
+            r = requests.get(TOR_LIST, timeout=5)
+            TOR_CACHE["ips"] = set(r.text.splitlines())
+            TOR_CACHE["ts"] = now
+        except Exception:
+            return False
+    return ip in TOR_CACHE["ips"]
 
 def create_honeytoken(ip: str, sess: str) -> str:
     fn = f"secret_{uuid.uuid4().hex}.txt"
@@ -237,6 +247,26 @@ def create_user_lure(user: str) -> str:
     except Exception:
         pass
     return fn
+
+def validate_path(rel: str) -> str:
+    """Valide un chemin fourni par un client et retourne le chemin absolu"""
+    rel = rel.lstrip("/")
+    abs_path = os.path.abspath(os.path.join(ROOT_DIR, rel))
+    if not abs_path.startswith(os.path.abspath(ROOT_DIR)):
+        raise ValueError("Invalid path")
+    return abs_path
+
+def disk_usage(path: str) -> int:
+    """Retourne la taille totale (en octets) d'un répertoire."""
+    total = 0
+    for root, dirs, files in os.walk(path):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                total += os.path.getsize(fp)
+            except OSError:
+                pass
+    return total
 
 # Port-knocking logic
 ftp_started = False
@@ -280,7 +310,10 @@ def start_ftp():
     # Use a simple dictionary-based checker so we can keep credentials as
     # strings.  This avoids the byte-vs-str mismatch in Twisted's built-in
     # checker which caused logins to fail.
-    p.registerChecker(DictChecker({"attacker": "secret"}))
+    p.registerChecker(DictChecker({
+        "attacker": "secret",
+        "ftpman": "ftpman",
+    }))
     p.registerChecker(AllowAnonymousAccess())
     ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
     def _listen_ssl(port, factory, *a, **kw):
@@ -345,6 +378,10 @@ class HoneyShell(ftp.FTPShell):
         rel = "/".join(path)
         if rel in CANARY:
             alert(f"CANARY READ {rel} by {self.avatarId}")
+        try:
+            validate_path(rel)
+        except ValueError:
+            return defer.fail(FileNotFoundError(rel))
         return super().openForReading(path)
 
     def ftp_CWD(self, path):
@@ -408,8 +445,13 @@ class HoneyFTP(ftp.FTP):
         return d
 
     def ftp_RNFR(self, fn):
-        peer, old = self.transport.getPeer().host, fn.lstrip("/")
-        self._old = old
+        peer = self.transport.getPeer().host
+        try:
+            old = validate_path(fn)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
+        self._old = os.path.relpath(old, ROOT_DIR)
         logging.info("RNFR %s %s", peer, old)
         with open(os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a") as rl:
             rl.write(f"RNFR {old}\n")
@@ -418,19 +460,26 @@ class HoneyFTP(ftp.FTP):
         return
 
     def ftp_RNTO(self, new):
-        peer, old = self.transport.getPeer().host, getattr(self, "_old", None)
-        new = new.lstrip("/")
-        if not old:
+        peer = self.transport.getPeer().host
+        old_rel = getattr(self, "_old", None)
+        try:
+            new_path = validate_path(new)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
+        new_rel = os.path.relpath(new_path, ROOT_DIR)
+        old_path = os.path.join(ROOT_DIR, old_rel) if old_rel else None
+        if not old_rel:
             self.sendLine("550 RNFR first")
             return
-        src, dst = os.path.join(ROOT_DIR, old), os.path.join(ROOT_DIR, new)
+        src, dst = old_path, new_path
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             os.rename(src, dst)
-            logging.info("RNTO %s %s→%s", peer, old, new)
+            logging.info("RNTO %s %s→%s", peer, old_rel, new_rel)
             with open(os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a") as rl:
-                rl.write(f"RNTO {old}→{new}\n")
-            log_operation(f"RNTO {old}->{new} from {peer} session={self.session}")
+                rl.write(f"RNTO {old_rel}→{new_rel}\n")
+            log_operation(f"RNTO {old_rel}->{new_rel} from {peer} session={self.session}")
             STATS["renames"] += 1
             self.sendLine("250 Rename done")
             return
@@ -439,12 +488,18 @@ class HoneyFTP(ftp.FTP):
             return
 
     def ftp_DELE(self, path):
-        peer, rel = self.transport.getPeer().host, path.lstrip("/")
+        peer = self.transport.getPeer().host
+        try:
+            abs_path = validate_path(path)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
+        rel = os.path.relpath(abs_path, ROOT_DIR)
         tag = f"{self.session}_{uuid.uuid4().hex}"
         dst = os.path.join(QUAR_DIR, tag)
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            os.replace(os.path.join(ROOT_DIR, rel), dst)
+            os.replace(abs_path, dst)
             logging.info("DELE %s %s→quarantine/%s", peer, rel, tag)
             self.logf.write(f"DELE {rel}→quarantine/{tag}\n")
             log_operation(f"DELE {rel} by {peer} session={self.session}")
@@ -456,33 +511,57 @@ class HoneyFTP(ftp.FTP):
             return
 
     def ftp_MKD(self, path):
-        # délégation pour éviter timeout côté client
+        try:
+            validate_path(path)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
         res = ftp.FTP.ftp_MKD(self, path)
         log_operation(f"MKD {path} session={self.session}")
         return res
 
     def ftp_RMD(self, path):
+        try:
+            validate_path(path)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
         res = ftp.FTP.ftp_RMD(self, path)
         log_operation(f"RMD {path} session={self.session}")
         return res
 
     def ftp_RETR(self, path):
-        rel, peer = path.lstrip("/"), self.transport.getPeer().host
+        peer = self.transport.getPeer().host
+        try:
+            abs_path = validate_path(path)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
+        rel = os.path.relpath(abs_path, ROOT_DIR)
         if rel in CANARY:
             alert(f"CANARY RETR {rel} by {peer}")
-        if rel == getattr(self,"token",None):
+        if rel == getattr(self, "token", None):
             logging.info("HONEYTOKEN DL %s session=%s", rel, self.session)
         self.logf.write(f"RETR {rel}\n")
         log_operation(f"RETR {rel} by {peer} session={self.session}")
         STATS["downloads"] += 1
-        return super().ftp_RETR(path)
+        return super().ftp_RETR('/' + rel)
 
     def ftp_STOR(self, path):
-        rel, peer = path.lstrip("/"), self.transport.getPeer().host
+        peer = self.transport.getPeer().host
+        try:
+            abs_path = validate_path(path)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
+        if disk_usage(ROOT_DIR) >= QUOTA_BYTES:
+            self.sendLine("552 Quota exceeded")
+            return
+        rel = os.path.relpath(abs_path, ROOT_DIR)
         self.logf.write(f"STOR {rel}\n")
         log_operation(f"STOR {rel} by {peer} session={self.session}")
         STATS["uploads"] += 1
-        return super().ftp_STOR(path)
+        return super().ftp_STOR('/' + rel)
 
     def ftp_SITE(self, params):
         parts = params.strip().split(" ",1)
