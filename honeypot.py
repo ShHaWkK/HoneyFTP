@@ -87,6 +87,7 @@ def _cleanup_pid():
         pass
 
 atexit.register(_cleanup_pid)
+atexit.register(save_stats)
 
 # 3) Logging central
 color_init()
@@ -236,6 +237,29 @@ STATS = {
     "ls": 0,
     "cd": 0,
 }
+
+# Persist global statistics across restarts
+STATS_FILE = os.path.join(BASE, "stats_global.json")
+
+def load_stats() -> None:
+    try:
+        with open(STATS_FILE) as f:
+            data = json.load(f)
+            STATS.update({k: int(data.get(k, v)) for k, v in STATS.items()})
+    except Exception:
+        pass
+
+def save_stats() -> None:
+    try:
+        with open(STATS_FILE, "w") as f:
+            json.dump(STATS, f)
+    except Exception:
+        pass
+
+load_stats()
+
+# Suggested post-session actions to display in the menu
+ACTIONS = []
 
 def get_next_session_id() -> str:
     """Return the next incremental session ID (session1, session2, ...)."""
@@ -417,6 +441,11 @@ def finalize_session(sess: str, start: datetime, dls=0, ups=0, cds=0, rns=0, siz
             if os.path.exists(slog):
                 z.write(slog, "session.log")
         alert(f"Session {sess} archived")
+        ACTIONS.extend([
+            f"Analyser les logs de {sess}",
+            f"Générer un rapport pour {sess}",
+            "Nettoyer la quarantine",
+        ])
     except Exception:
         pass
 
@@ -1005,8 +1034,9 @@ def stop_server():
     if server_thread:
         server_thread.join()
         server_thread = None
-        server_running = False
-        _cleanup_pid()
+    server_running = False
+    save_stats()
+    _cleanup_pid()
 
 def tail_log():
     try:
@@ -1031,6 +1061,14 @@ def list_sessions():
             sess.append((idx, name))
     for _, name in sorted(sess):
         print(name)
+
+def list_actions():
+    if not ACTIONS:
+        print("Aucune action suggérée")
+        return
+    for idx, action in enumerate(ACTIONS, 1):
+        print(f"[{idx}] {action}")
+
 
 def show_session(sid=None):
     if sid is None:
@@ -1059,6 +1097,7 @@ def menu_loop():
         "[4] Lister les sessions (ID)\n"
         "[5] Afficher une session (ex. 5)\n"
         "[6] Statistiques globales (connections, uploads...)\n"
+        "[7] Actions a effectuer\n"
         "[0] Quitter\n"
     )
     while True:
@@ -1077,6 +1116,8 @@ def menu_loop():
             show_session(sid)
         elif choice == "6":
             show_stats()
+        elif choice == "7":
+            list_actions()
         elif choice == "0":
             stop_server()
             break
