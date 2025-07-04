@@ -86,9 +86,6 @@ def _cleanup_pid():
     except OSError:
         pass
 
-atexit.register(_cleanup_pid)
-atexit.register(save_stats)
-
 # 3) Logging central
 color_init()
 
@@ -257,6 +254,10 @@ def save_stats() -> None:
         pass
 
 load_stats()
+
+# Register cleanup handlers
+atexit.register(_cleanup_pid)
+atexit.register(save_stats)
 
 # Suggested post-session actions to display in the menu
 ACTIONS = []
