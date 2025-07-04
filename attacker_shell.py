@@ -90,9 +90,9 @@ class FtpShell(Cmd):
         self.logged = False
 
     # --- gestion de la connexion -------------------------------------------------
-    def do_open(self, arg):
-        """open [host] [port]
-Ouvre la connexion FTPS (avec port-knocking automatique)."""
+    def do_connect(self, arg):
+        """connect [host] [port] [user] [password]
+Ouvre la connexion puis se log automatiquement."""
         if self.ftp:
             print("Déjà connecté. Utilisez 'close' d'abord.")
             return
@@ -101,22 +101,30 @@ Ouvre la connexion FTPS (avec port-knocking automatique)."""
             self.host = parts[0]
         if len(parts) > 1:
             self.port = int(parts[1])
+        user = parts[2] if len(parts) > 2 else "anonymous"
+        pwd = parts[3] if len(parts) > 3 else ACCOUNTS.get(user, "")
         print(f"Knock sur {self.host}:{self.port}…")
         knock(self.host)
         try:
             self.ftp = make_ftps(self.host, self.port)
+            resp = self.ftp.login(user, pwd)
+            self.ftp.prot_p()
+            self.logged = True
+            print("Knock OK, FTPS démarré et connecté")
+            print(f"< {resp}")
         except Exception as e:
             print(f"Erreur connexion : {e}")
             self.ftp = None
-            return
-        print("Knock OK, FTPS démarré")
-        self.logged = False
+            self.logged = False
+
+    # Alias for backward compatibility
+    do_open = do_connect
 
     def do_login(self, arg):
         """login [user] [password]
 Authentifie l'utilisateur (anonymous par défaut)."""
         if not self.ftp:
-            print("Pas de connexion ouverte. Utilisez 'open'.")
+            print("Pas de connexion ouverte. Utilisez 'connect'.")
             return
         parts = arg.split()
         user = parts[0] if parts else "anonymous"
@@ -146,7 +154,7 @@ Authentifie l'utilisateur (anonymous par défaut)."""
 
     def _ensure_login(self) -> bool:
         if not self.ftp or not self.logged:
-            print("Vous devez d'abord 'open' puis 'login'.")
+            print("Vous devez d'abord 'connect'.")
             return False
         return True
 

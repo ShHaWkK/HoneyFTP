@@ -21,7 +21,7 @@ Fonctionnalités :
 """
 
 import os, sys, subprocess, shutil, uuid, random, logging, smtplib, tempfile
-import json, zipfile, atexit, base64, threading, argparse
+import json, zipfile, atexit, base64, threading, argparse, re
 from datetime import datetime, timedelta, timezone
 
 # 1) Bootstrap pip deps
@@ -87,6 +87,7 @@ def _cleanup_pid():
         pass
 
 atexit.register(_cleanup_pid)
+atexit.register(save_stats)
 
 # 3) Logging central
 color_init()
@@ -237,6 +238,41 @@ STATS = {
     "cd": 0,
 }
 
+# Persist global statistics across restarts
+STATS_FILE = os.path.join(BASE, "stats_global.json")
+
+def load_stats() -> None:
+    try:
+        with open(STATS_FILE) as f:
+            data = json.load(f)
+            STATS.update({k: int(data.get(k, v)) for k, v in STATS.items()})
+    except Exception:
+        pass
+
+def save_stats() -> None:
+    try:
+        with open(STATS_FILE, "w") as f:
+            json.dump(STATS, f)
+    except Exception:
+        pass
+
+load_stats()
+
+# Suggested post-session actions to display in the menu
+ACTIONS = []
+
+def get_next_session_id() -> str:
+    """Return the next incremental session ID (session1, session2, ...)."""
+    max_id = 0
+    if os.path.isdir(SESS_DIR):
+        for name in os.listdir(SESS_DIR):
+            m = re.search(r"session(\d+)", name)
+            if m:
+                num = int(m.group(1))
+                if num > max_id:
+                    max_id = num
+    return f"session{max_id + 1}"
+
 # Limite maximale d'espace disque pour le faux filesystem (env HONEYFTP_QUOTA_MB)
 QUOTA_BYTES = int(os.getenv("HONEYFTP_QUOTA_MB", "10")) * 1024 * 1024
 # Quota disque par session (50 Mo par défaut)
@@ -342,7 +378,7 @@ def is_tor_exit(ip: str) -> bool:
     return ip in TOR_CACHE["ips"]
 
 def create_honeytoken(ip: str, sess: str) -> str:
-    fn = f"secret_{uuid.uuid4().hex}.txt"
+    fn = f"secret_{sess}.txt"
     with open(os.path.join(ROOT_DIR, fn),"w") as f:
         f.write(f"session={sess}\nip={ip}\n")
     return fn
@@ -405,6 +441,11 @@ def finalize_session(sess: str, start: datetime, dls=0, ups=0, cds=0, rns=0, siz
             if os.path.exists(slog):
                 z.write(slog, "session.log")
         alert(f"Session {sess} archived")
+        ACTIONS.extend([
+            f"Analyser les logs de {sess}",
+            f"Générer un rapport pour {sess}",
+            "Nettoyer la quarantine",
+        ])
     except Exception:
         pass
 
@@ -532,7 +573,7 @@ class HoneyFTP(ftp.FTP):
     def connectionMade(self):
         super().connectionMade()
         STATS["connections"] += 1
-        self.session = uuid.uuid4().hex
+        self.session = get_next_session_id()
         peer        = self.transport.getPeer().host
         self.logf   = open(os.path.join(SESS_DIR,f"{self.session}.log"),"a")
         self.start, self.count = datetime.now(timezone.utc), 0
@@ -919,25 +960,37 @@ class HoneyRealm(ftp.FTPRealm):
 server_thread = None
 server_running = False
 knock_ports = []
+reactor_started = False
 
 def run_server():
-    global knock_ports
+    """Run the Twisted reactor and bind knock ports once."""
+    global knock_ports, reactor_started
+    # Guard: only bind UDP ports and start the reactor the first time
     if not knock_ports:
         for p in KNOCK_SEQ:
             knock_ports.append(reactor.listenUDP(p, KnockProtocol(p)))
     logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
-    reactor.run(installSignalHandlers=0)
+    if not reactor_started:
+        reactor_started = True
+        reactor.run(installSignalHandlers=0)
 
 def start_server():
+    """Launch the reactor in a background thread if not already running."""
     global server_thread, server_running
     if server_running:
         print("Serveur déjà démarré")
         return
+    # Guard: Twisted reactor cannot be restarted once stopped
+    if reactor_started:
+        print("Reactor déjà arrêté - relance impossible dans ce processus")
+        return
+    server_running = True
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
-    server_running = True
 
 def _close_knocks():
+    """Close any UDP knock ports currently bound."""
+    # Guard: prevents rebinding by clearing the global knock_ports list
     global knock_ports
     for port in knock_ports:
         try:
@@ -946,15 +999,24 @@ def _close_knocks():
             pass
     knock_ports = []
 
+def _shutdown():
+    """Stop UDP listeners then terminate the reactor."""
+    _close_knocks()
+    reactor.stop()
+
 def stop_server():
-    global server_running
+    """Stop knock listeners and the reactor."""
+    global server_running, server_thread
     if not server_running:
         print("Serveur non démarré")
         return
-    reactor.callFromThread(_close_knocks)
-    reactor.callFromThread(reactor.stop)
-    server_thread.join()
+    # Guard: stopListening on ports before halting the reactor
+    reactor.callFromThread(_shutdown)
+    if server_thread:
+        server_thread.join()
+        server_thread = None
     server_running = False
+    save_stats()
     _cleanup_pid()
 
 def tail_log():
@@ -971,9 +1033,22 @@ def list_sessions():
     if not os.path.isdir(SESS_DIR):
         print("Aucune session")
         return
+    sess = []
     for f in os.listdir(SESS_DIR):
-        if f.endswith('.log'):
-            print(f[:-4])
+        if f.endswith('.log') and '.rename' not in f:
+            name = f[:-4]
+            m = re.search(r'session(\d+)', name)
+            idx = int(m.group(1)) if m else 0
+            sess.append((idx, name))
+    for _, name in sorted(sess):
+        print(name)
+
+def list_actions():
+    if not ACTIONS:
+        print("Aucune action suggérée")
+        return
+    for idx, action in enumerate(ACTIONS, 1):
+        print(f"[{idx}] {action}")
 
 def show_session(sid=None):
     if sid is None:
@@ -1002,6 +1077,7 @@ def menu_loop():
         "[4] Lister les sessions (ID)\n"
         "[5] Afficher une session (ex. 5)\n"
         "[6] Statistiques globales (connections, uploads...)\n"
+        "[7] Actions a effectuer\n"
         "[0] Quitter\n"
     )
     while True:
@@ -1020,6 +1096,8 @@ def menu_loop():
             show_session(sid)
         elif choice == "6":
             show_stats()
+        elif choice == "7":
+            list_actions()
         elif choice == "0":
             stop_server()
             break
