@@ -964,15 +964,34 @@ reactor_started = False
 
 def run_server():
     """Run the Twisted reactor and bind knock ports once."""
-    global knock_ports, reactor_started
-    # Guard: only bind UDP ports and start the reactor the first time
-    if not knock_ports:
-        for p in KNOCK_SEQ:
-            knock_ports.append(reactor.listenUDP(p, KnockProtocol(p)))
-    logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
-    if not reactor_started:
-        reactor_started = True
-        reactor.run(installSignalHandlers=0)
+    global knock_ports, reactor_started, server_running
+    try:
+        if not knock_ports:
+            for p in KNOCK_SEQ:
+                try:
+                    knock_ports.append(reactor.listenUDP(p, KnockProtocol(p)))
+                except net_error.CannotListenError:
+                    logging.critical(
+                        "Port %d déjà utilisé ; modifie KNOCK_SEQ ou libère-le",
+                        p,
+                    )
+                    # Nettoyage : fermer ceux qui étaient déjà ouverts
+                    for port in knock_ports:
+                        try:
+                            port.stopListening()
+                        except Exception:
+                            pass
+                    knock_ports.clear()
+                    server_running = False            # on peut retenter plus tard
+                    return                            # on sort proprement
+
+        logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
+        if not reactor_started:
+            reactor_started = True
+            reactor.run(installSignalHandlers=False)
+    finally:
+        # Si le reactor sort (Ctrl-C ou autre), remettre le flag
+        server_running = False
 
 def start_server():
     """Launch the reactor in a background thread if not already running."""
@@ -1049,6 +1068,7 @@ def list_actions():
         return
     for idx, action in enumerate(ACTIONS, 1):
         print(f"[{idx}] {action}")
+
 
 def show_session(sid=None):
     if sid is None:
