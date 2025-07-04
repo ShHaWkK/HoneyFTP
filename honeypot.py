@@ -964,7 +964,6 @@ def run_server():
         # Si le reactor sort (Ctrl-C ou autre), remettre le flag
         server_running = False
 
-
 def start_server():
     """Launch the reactor in a background thread if not already running."""
     global server_thread, server_running
@@ -997,7 +996,7 @@ def _shutdown():
 
 def stop_server():
     """Stop knock listeners and the reactor."""
-    global server_running
+    global server_running, server_thread
     if not server_running:
         print("Serveur non démarré")
         return
@@ -1005,8 +1004,9 @@ def stop_server():
     reactor.callFromThread(_shutdown)
     if server_thread:
         server_thread.join()
-    server_running = False
-    _cleanup_pid()
+        server_thread = None
+        server_running = False
+        _cleanup_pid()
 
 def tail_log():
     try:
