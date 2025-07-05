@@ -771,7 +771,9 @@ class HoneyFTP(ftp.FTP):
 
     def ftp_NLST(self, path):
         peer = self.transport.getPeer().host
-        p = path or self.workingDirectory
+        # When no path is supplied, use an empty string so validate_path()
+        # receives a string instead of the working directory list.
+        p = path or ""
         try:
             _, rel = validate_path(p, self.workingDirectory)
         except ValueError:
