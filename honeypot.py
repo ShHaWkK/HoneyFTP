@@ -20,8 +20,10 @@ Fonctionnalités :
 – Logs centraux + par session
 """
 
-import os, sys, subprocess, shutil, uuid, random, logging, smtplib, tempfile
-import json, zipfile, atexit, base64, threading, argparse, re, mimetypes, hashlib
+import os, tempfile, zipfile
+import sys, subprocess, shutil, uuid, random, logging, smtplib
+import json, atexit, base64, threading, argparse, re, mimetypes, hashlib
+from twisted.internet import defer
 from datetime import datetime, timedelta, timezone
 
 # 1) Bootstrap pip deps
@@ -877,6 +879,18 @@ class HoneyFTP(ftp.FTP):
         peer = self.transport.getPeer().host
         try:
             abs_path, rel = validate_path(path, self.workingDirectory)
+            if os.path.isdir(abs_path):
+                # crée un ZIP temporaire de tout le contenu du répertoire
+                tmpf = tempfile.NamedTemporaryFile(prefix="honeypot_", suffix=".zip", delete=False)
+                with zipfile.ZipFile(tmpf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for root, dirs, files in os.walk(abs_path):
+                        for fname in files:
+                            full = os.path.join(root, fname)
+                            arc = os.path.relpath(full, abs_path)
+                            zf.write(full, arc)
+                tmpf.flush()
+                f = open(tmpf.name, "rb")
+                return defer.succeed(ftp._FileReader(f))
         except ValueError:
             self.sendLine("550 Invalid path")
             return
