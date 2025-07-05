@@ -19,6 +19,9 @@ session.
 - *Port-knocking* UDP pour activer le serveur réel
 - Uploads anonymes autorisés et fichiers supprimés placés en quarantaine
 - Détection d'IP Tor, brute-force et génération de leurres
+- Leurres Office dynamiquement générés (docx et xlsx) avec de faux tableaux financiers
+  ou des descriptions de projet
+- Sandboxing automatique des fichiers uploadés avec génération de rapports JSON
 - Alertes détaillées par mail ou Slack avec IP, utilisateur, session et
   dernières commandes lorsqu'un fichier canari est consulté
 - Journaux colorés sur la console et `honeypot.log` au format texte
