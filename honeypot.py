@@ -1091,6 +1091,12 @@ class HoneyFTP(ftp.FTP):
             self.sendLine("200 Protection level ignored")
         return
 
+    def ftp_TYPE(self, params):
+        """Force binary mode regardless of client request."""
+        self.binary = True
+        self.sendLine("200 Type set to I")
+        return
+
     def getDTPPort(self, factory, interface=""):
         for portn in self.passivePortRange:
             try:
