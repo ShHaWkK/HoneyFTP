@@ -323,6 +323,8 @@ from twisted.python import filepath
 TOR_LIST   = "https://check.torproject.org/torbulkexitlist"
 BRUTEF_THR = 5
 DELAY_SEC  = 2
+# Files listed here act as canaries: reading or downloading them triggers an
+# alert via the `alert()` function.
 CANARY     = {
     "passwords.txt",
     "secrets/ssh_key",
@@ -333,7 +335,7 @@ FORBID     = {"secrets"}        # supprimer un répertoire "secrets" déclenche 
 PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
 KNOCK_SEQ  = [4020, 4021, 4022]
 SLACK_URL  = os.getenv("SLACK_WEBHOOK")
-# Configuration SMTP par variables d'environnement avec valeurs par défaut
+# Configuration SMTP par variables d'environnement avec valeurs par défaut.
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USER = os.getenv("SMTP_USER", "honeycute896@gmail.com")
