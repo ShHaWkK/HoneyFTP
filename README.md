@@ -19,6 +19,8 @@ session.
 - *Port-knocking* UDP pour activer le serveur réel
 - Uploads anonymes autorisés et fichiers supprimés placés en quarantaine
 - Détection d'IP Tor, brute-force et génération de leurres
+- Alertes détaillées par mail ou Slack avec IP, utilisateur, session et
+  dernières commandes lorsqu'un fichier canari est consulté
 - Journaux colorés sur la console et `honeypot.log` au format texte
 - Commandes supplémentaires `SITE UPTIME` et `SITE STATS`
 - Script `attaquant.py` exécutable en mode non interactif (`--script` ou `--commands`)

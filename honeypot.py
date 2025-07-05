@@ -349,18 +349,45 @@ SMTP_CFG   = (
     ALERT_TO,
 )
 
-def alert(msg: str):
+def alert(msg: str, *, ip: str | None = None, user: str | None = None,
+          session: str | None = None, log_file: str | None = None) -> None:
+    """Send an alert via Slack and/or SMTP with contextual information."""
+    ts = datetime.now(timezone.utc).isoformat()
+    details = [msg, "", f"Time: {ts}"]
+    if ip:
+        details.append(f"IP: {ip}")
+    if user:
+        details.append(f"User: {user}")
+    if session:
+        details.append(f"Session: {session}")
+    if log_file:
+        try:
+            with open(log_file) as f:
+                lines = f.read().splitlines()[-5:]
+            details.append("")
+            details.append("Last commands:")
+            details.extend(lines)
+        except Exception:
+            pass
+    body = "\n".join(details)
+
     if SLACK_URL:
-        try: requests.post(SLACK_URL, json={"text":msg}, timeout=5)
-        except: pass
-    srv,port,u,pw,fr,to = SMTP_CFG
+        try:
+            requests.post(SLACK_URL, json={"text": body}, timeout=5)
+        except Exception:
+            pass
+    srv, port, u, pw, fr, to = SMTP_CFG
     if srv and fr and to:
         try:
             s = smtplib.SMTP(srv, port, timeout=5)
-            if u: s.starttls(); s.login(u,pw or "")
-            mail = f"Subject:HoneyFTP Alert\nFrom:{fr}\nTo:{to}\n\n{msg}"
-            s.sendmail(fr,[to], mail); s.quit()
-        except: pass
+            if u:
+                s.starttls()
+                s.login(u, pw or "")
+            mail = f"Subject:HoneyFTP Alert\nFrom:{fr}\nTo:{to}\n\n{body}"
+            s.sendmail(fr, [to], mail)
+            s.quit()
+        except Exception:
+            pass
 
 def log_operation(msg: str):
     """Append an entry to the operations log."""
@@ -448,7 +475,15 @@ def finalize_session(sess: str, start: datetime, dls=0, ups=0, cds=0, rns=0, siz
             slog = os.path.join(SESS_DIR, f"{sess}.log")
             if os.path.exists(slog):
                 z.write(slog, "session.log")
-        alert(f"Session {sess} archived")
+        summary = (
+            f"Session {sess} archived: "
+            f"{ups} uploads, {dls} downloads, {rns} renames, {cds} cd"
+        )
+        alert(
+            summary,
+            session=sess,
+            log_file=os.path.join(SESS_DIR, f"{sess}.log"),
+        )
         ACTIONS.extend([
             f"Analyser les logs de {sess}",
             f"Générer un rapport pour {sess}",
@@ -561,7 +596,17 @@ class HoneyShell(ftp.FTPShell):
     def openForReading(self, path):
         rel = "/".join(path)
         if rel in CANARY:
-            alert(f"CANARY READ {rel} by {self.avatarId}")
+            proto = getattr(self, "protocol", None)
+            ip = proto.transport.getPeer().host if proto else None
+            sess = proto.session if proto else None
+            logf = proto.logf.name if proto and hasattr(proto, "logf") else None
+            alert(
+                f"CANARY READ {rel}",
+                ip=ip,
+                user=self.avatarId,
+                session=sess,
+                log_file=logf,
+            )
         return super().openForReading(path)
 
     def ftp_CWD(self, path):
@@ -592,7 +637,12 @@ class HoneyFTP(ftp.FTP):
         self.s_ren = 0
         logging.info("CONNECT %s session=%s", peer, self.session)
         if is_tor_exit(peer):
-            alert(f"Tor exit node: {peer}")
+            alert(
+                "Tor exit node detected",
+                ip=peer,
+                session=self.session,
+                log_file=self.logf.name,
+            )
         self.token = create_honeytoken(peer, self.session)
 
     def connectionLost(self, reason):
@@ -635,9 +685,15 @@ class HoneyFTP(ftp.FTP):
         self.logf.write(f"PASS {pw}\n")
         d = super().ftp_PASS(pw)
         def onFail(e):
-            failed_attempts[peer] = failed_attempts.get(peer,0) + 1
+            failed_attempts[peer] = failed_attempts.get(peer, 0) + 1
             if failed_attempts[peer] >= BRUTEF_THR:
-                alert(f"Brute-force from {peer}")
+                alert(
+                    "Brute-force attempt",
+                    ip=peer,
+                    user=self.username,
+                    session=self.session,
+                    log_file=self.logf.name,
+                )
             return e
         def onSucc(r):
             failed_attempts.pop(peer,None)
@@ -742,10 +798,22 @@ class HoneyFTP(ftp.FTP):
             self.sendLine("550 Invalid path")
             return
         if rel in CANARY:
-            alert(f"CANARY RETR {rel} by {peer}")
+            alert(
+                f"CANARY RETR {rel}",
+                ip=peer,
+                user=getattr(self, "username", None),
+                session=self.session,
+                log_file=self.logf.name,
+            )
         if rel == getattr(self, "token", None):
             logging.info("HONEYTOKEN DL %s session=%s", rel, self.session)
-            alert(f"HONEYTOKEN {rel} from {peer}")
+            alert(
+                f"HONEYTOKEN {rel}",
+                ip=peer,
+                user=getattr(self, "username", None),
+                session=self.session,
+                log_file=self.logf.name,
+            )
         self.logf.write(f"RETR {rel}\n")
         log_operation(f"RETR {rel} by {peer} session={self.session}")
         STATS["downloads"] += 1
@@ -822,7 +890,13 @@ class HoneyFTP(ftp.FTP):
             self.sendLine("550 Invalid path")
             return
         if rel in CANARY:
-            alert(f"CANARY STAT {rel} by {peer}")
+            alert(
+                f"CANARY STAT {rel}",
+                ip=peer,
+                user=getattr(self, "username", None),
+                session=self.session,
+                log_file=self.logf.name,
+            )
         self.logf.write(f"STAT {rel}\n")
         log_operation(f"STAT {rel} by {peer} session={self.session}")
         return super().ftp_STAT(path)
@@ -943,8 +1017,15 @@ class HoneyFTP(ftp.FTP):
         logging.info("CMD %s %s", peer, cmd)
         self.logf.write(cmd+"\n")
         self.count+=1
-        if self.count>20 and (datetime.now(timezone.utc)-self.start).total_seconds()<10:
-            alert(f"Fast scan {peer}")
+        if self.count > 20 and (
+            datetime.now(timezone.utc) - self.start
+        ).total_seconds() < 10:
+            alert(
+                "Fast scan detected",
+                ip=peer,
+                session=self.session,
+                log_file=self.logf.name,
+            )
             reactor.callLater(random.uniform(2,5), lambda:None)
         return super().lineReceived(line)
 
