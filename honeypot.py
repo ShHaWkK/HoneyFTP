@@ -336,7 +336,6 @@ PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
 KNOCK_SEQ  = [4020, 4021, 4022]
 SLACK_URL  = os.getenv("SLACK_WEBHOOK")
 # Configuration SMTP par variables d'environnement avec valeurs par défaut.
-# Pour Gmail, créez un mot de passe d'application pour `SMTP_PASS`.
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SMTP_USER = os.getenv("SMTP_USER", "honeycute896@gmail.com")
