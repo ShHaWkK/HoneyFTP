@@ -1283,6 +1283,38 @@ def show_stats():
         print(f"{k}: {v}")
 
 
+def generate_report(session_id: str) -> None:
+    """Generate a text report for a given session."""
+    stats_file = os.path.join(SESS_DIR, f"stats_{session_id}.json")
+    log_file = os.path.join(SESS_DIR, f"{session_id}.log")
+
+    try:
+        with open(stats_file) as f:
+            stats = json.load(f)
+    except FileNotFoundError:
+        print("Fichier de statistiques introuvable")
+        return
+
+    try:
+        with open(log_file) as f:
+            log_content = f.read()
+    except FileNotFoundError:
+        log_content = ""
+
+    report_dir = os.path.join(BASE, "reports")
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, f"report_{session_id}.txt")
+
+    with open(report_path, "w") as rep:
+        rep.write(f"HoneyFTP Rapport de session {session_id}\n")
+        for k, v in stats.items():
+            rep.write(f"{k}: {v}\n")
+        rep.write("\n")
+        rep.write(log_content)
+
+    print(f"Rapport généré: {report_path}")
+
+
 def menu_loop():
     MENU = (
         "\n"
