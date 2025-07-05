@@ -21,7 +21,7 @@ Fonctionnalités :
 """
 
 import os, sys, subprocess, shutil, uuid, random, logging, smtplib, tempfile
-import json, zipfile, atexit, base64, threading, argparse, re
+import json, zipfile, atexit, base64, threading, argparse, re, mimetypes, hashlib
 from datetime import datetime, timedelta, timezone
 
 # 1) Bootstrap pip deps
@@ -50,6 +50,7 @@ for pkg, imp in [
     ("rich", None),
     ("Pillow", "PIL"),
     ("openpyxl", None),
+    ("python-docx", "docx"),
     ("fpdf2", "fpdf"),
 ]:
     ensure(pkg, imp)
@@ -72,12 +73,13 @@ else:
 ROOT_DIR = os.path.join(BASE, "virtual_fs")
 QUAR_DIR = os.path.join(BASE, "quarantine")
 SESS_DIR = os.path.join(BASE, "sessions")
+SANDBOX_DIR = os.path.join(BASE, "sandbox_reports")
 LOG_FILE = os.path.join(BASE, "honeypot.log")
 OP_LOG   = os.path.join(BASE, "operations.log")
 PID_FILE = os.path.join(BASE, "honeypot.pid")
 VERSION  = "1.1"
 SERVER_START = datetime.now(timezone.utc)
-for d in (ROOT_DIR, QUAR_DIR, SESS_DIR):
+for d in (ROOT_DIR, QUAR_DIR, SESS_DIR, SANDBOX_DIR):
     os.makedirs(d, exist_ok=True)
 
 def _cleanup_pid():
@@ -125,6 +127,7 @@ logging.basicConfig(level=logging.INFO, handlers=handlers)
 def create_lure_files():
     from PIL import Image
     from openpyxl import Workbook
+    from docx import Document
     import io
     try:
         from fpdf import FPDF
@@ -194,11 +197,34 @@ def create_lure_files():
 
     wb = Workbook()
     ws = wb.active
-    ws.append(["ID", "Value"])
-    ws.append([1, 100])
+    ws.title = "Financials"
+    ws.append(["Quarter", "Revenue", "Expenses", "Profit"])
+    for q in range(1,5):
+        rev = random.randint(50000, 150000)
+        exp = random.randint(20000, 80000)
+        ws.append([f"Q{q}", rev, exp, rev-exp])
     buf = io.BytesIO()
     wb.save(buf)
-    files["finance/Q3_Report.xlsx"] = buf.getvalue()
+    files["finance/Financials.xlsx"] = buf.getvalue()
+
+    doc = Document()
+    doc.add_heading("Project Apollo", 0)
+    doc.add_paragraph(
+        "This document outlines the objectives and milestones of Project Apollo, "
+        "our next generation platform."
+    )
+    table = doc.add_table(rows=1, cols=2)
+    table.style = "Light List"
+    hdr = table.rows[0].cells
+    hdr[0].text = "Phase"
+    hdr[1].text = "Description"
+    for phase in ["Design", "Implementation", "Testing", "Deployment"]:
+        row = table.add_row().cells
+        row[0].text = phase
+        row[1].text = f"Details for {phase.lower()} phase"
+    buf = io.BytesIO()
+    doc.save(buf)
+    files["docs/project_apollo.docx"] = buf.getvalue()
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     priv = key.private_bytes(
@@ -395,6 +421,46 @@ def log_operation(msg: str):
         with open(OP_LOG, "a") as f:
             ts = datetime.now(timezone.utc).isoformat()
             f.write(f"{ts} {msg}\n")
+    except Exception:
+        pass
+
+def sandbox_analyze(path: str, session: str, user: str, ip: str) -> None:
+    """Run basic sandbox analysis on an uploaded file."""
+    report = {
+        "file": os.path.basename(path),
+        "size": os.path.getsize(path),
+        "mtime": datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc).isoformat(),
+        "md5": None,
+        "sha256": None,
+        "mime": mimetypes.guess_type(path)[0] or "unknown",
+        "strings": "",
+    }
+    try:
+        data = open(path, "rb").read()
+        report["md5"] = hashlib.md5(data).hexdigest()
+        report["sha256"] = hashlib.sha256(data).hexdigest()
+    except Exception as e:
+        report["error"] = str(e)
+    try:
+        proc = subprocess.run(
+            ["firejail", "--quiet", "--private", "--net=none", "strings", path],
+            capture_output=True, text=True, timeout=10
+        )
+        out = proc.stdout.splitlines()[:20]
+        report["strings"] = "\n".join(out)
+    except Exception as e:
+        report["strings"] = f"sandbox error: {e}"
+    os.makedirs(SANDBOX_DIR, exist_ok=True)
+    rep_path = os.path.join(SANDBOX_DIR, f"{session}_{uuid.uuid4().hex}.json")
+    try:
+        with open(rep_path, "w") as f:
+            json.dump(report, f, indent=2)
+        alert(
+            f"Sandbox report for {report['file']}",
+            ip=ip,
+            user=user,
+            session=session,
+        )
     except Exception:
         pass
 
@@ -850,6 +916,13 @@ class HoneyFTP(ftp.FTP):
                 self.s_bytes += os.path.getsize(abs_path)
             except Exception:
                 pass
+            reactor.callInThread(
+                sandbox_analyze,
+                abs_path,
+                self.session,
+                getattr(self, "username", "anonymous"),
+                peer,
+            )
             return res
         d.addCallback(_update)
         return d
