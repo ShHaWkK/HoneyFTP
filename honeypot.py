@@ -794,6 +794,17 @@ class HoneyFTP(ftp.FTP):
                 f.write("Jan 1 info fake\n")
         return super().ftp_NLST(path)
 
+    def ftp_LIST(self, params):
+        """Handle LIST even when no path is supplied."""
+        if not params:
+            # Fallback to NLST for clients that issue bare LIST
+            return self.ftp_NLST("")
+        return super().ftp_LIST(params)
+
+    def ftp_MLSD(self, params):
+        """Expose MLSD using our NLST implementation."""
+        return self.ftp_NLST(params)
+
     def ftp_STAT(self, path):
         peer = self.transport.getPeer().host
         try:
