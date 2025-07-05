@@ -333,13 +333,20 @@ FORBID     = {"secrets"}        # supprimer un répertoire "secrets" déclenche 
 PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
 KNOCK_SEQ  = [4020, 4021, 4022]
 SLACK_URL  = os.getenv("SLACK_WEBHOOK")
+# Configuration SMTP par variables d'environnement avec valeurs par défaut
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_USER = os.getenv("SMTP_USER", "honeycute896@gmail.com")
+SMTP_PASS = os.getenv("SMTP_PASS", "jawm fmcm dmaf qkyl")
+ALERT_FROM = SMTP_USER
+ALERT_TO = os.getenv("ALERT_TO", "alexandreuzan75@gmail.com")
 SMTP_CFG   = (
-    os.getenv("SMTP_SERVER"),
-    int(os.getenv("SMTP_PORT","0")) or 25,
-    os.getenv("SMTP_USER"),
-    os.getenv("SMTP_PASS"),
-    os.getenv("ALERT_FROM"),
-    os.getenv("ALERT_TO"),
+    SMTP_HOST,
+    SMTP_PORT,
+    SMTP_USER,
+    SMTP_PASS,
+    ALERT_FROM,
+    ALERT_TO,
 )
 
 def alert(msg: str):
