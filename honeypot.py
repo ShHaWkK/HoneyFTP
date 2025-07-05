@@ -61,6 +61,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from colorama import init as color_init, Fore, Style
+from typing import Optional
 
 # 2) Détermine le répertoire de base
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -375,8 +376,14 @@ SMTP_CFG   = (
     ALERT_TO,
 )
 
-def alert(msg: str, *, ip: str | None = None, user: str | None = None,
-          session: str | None = None, log_file: str | None = None) -> None:
+def alert(
+    msg: str,
+    *,
+    ip: Optional[str] = None,
+    user: Optional[str] = None,
+    session: Optional[str] = None,
+    log_file: Optional[str] = None,
+) -> None:
     """Send an alert via Slack and/or SMTP with contextual information."""
     ts = datetime.now(timezone.utc).isoformat()
     details = [msg, "", f"Time: {ts}"]
