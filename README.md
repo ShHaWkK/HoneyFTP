@@ -120,6 +120,17 @@ python attaquant.py --script attack
 python attaquant.py --commands commandes.txt
 ```
 
+### Lancer FileZilla automatiquement
+
+Un script d'assistance `knock_filezilla.py` envoie la séquence de port-knocking
+puis ouvre FileZilla avec les informations d'identification fournies :
+
+```bash
+./knock_filezilla.py <ip> [port] [user] [password]
+```
+
+Par défaut le port est `2121` et l'utilisateur `anonymous`.
+
 Le menu interactif accepte les valeurs **0 à 20** :
 
 
