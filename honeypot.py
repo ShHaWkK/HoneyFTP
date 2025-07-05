@@ -607,7 +607,17 @@ class HoneyShell(ftp.FTPShell):
                 session=sess,
                 log_file=logf,
             )
-        return super().openForReading(path)
+        abs_path = os.path.join(ROOT_DIR, *path)
+        if os.path.isdir(abs_path):
+            return defer.fail(ftp.IsADirectoryError(path))
+        try:
+            f = open(abs_path, "rb")
+        except OSError as e:
+            return ftp.errnoToFailure(e.errno, path)
+        except BaseException:
+            return defer.fail()
+        else:
+            return defer.succeed(ftp._FileReader(f))
 
     def ftp_CWD(self, path):
         if path.startswith(".."):
