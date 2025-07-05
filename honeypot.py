@@ -1132,6 +1132,30 @@ def menu_loop():
             show_stats()
         elif choice == "7":
             list_actions()
+            if ACTIONS:
+                sel = input("Numéro de l'action > ").strip()
+                try:
+                    idx = int(sel) - 1
+                    action = ACTIONS[idx]
+                except (ValueError, IndexError):
+                    print("Choix invalide.")
+                    continue
+                m = re.search(r"(session\d+)", action)
+                sid = m.group(1) if m else None
+                if action.startswith("Analyser"):
+                    if sid:
+                        show_session(sid)
+                    else:
+                        print("Choix invalide.")
+                elif action.startswith("Générer"):
+                    if sid:
+                        generate_report(sid)
+                    else:
+                        print("Choix invalide.")
+                elif action.startswith("Nettoyer"):
+                    clean_quarantine()
+                else:
+                    print("Choix invalide.")
         elif choice == "0":
             stop_server()
             break
