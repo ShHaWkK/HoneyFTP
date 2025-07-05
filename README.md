@@ -7,6 +7,12 @@ against the Tor exit list, detects brute-force attacks, and creates realistic
 lure files with canary triggers. Sensitive actions can generate alerts via
 Slack or SMTP. Each connection has its own session log for forensic analysis.
 
+Alert notifications can be sent to a Slack webhook or delivered by email. For
+SMTP you may specify `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and
+`ALERT_TO` in the environment. Default values point to Gmail so the honeypot
+works out of the box if you use a Google account (create an application
+password first).
+
 Un honeypot FTP à haute interaction émule un service FTP/FTPS complet afin que
 les attaquants puissent téléverser, télécharger et manipuler des fichiers.
 Chaque commande est enregistrée et certains fichiers servent de honeytokens,
@@ -22,6 +28,8 @@ session.
 - Journaux colorés sur la console et `honeypot.log` au format texte
 - Commandes supplémentaires `SITE UPTIME` et `SITE STATS`
 - Script `attaquant.py` exécutable en mode non interactif (`--script` ou `--commands`)
+- Certains fichiers servent de *canaries* (honeytokens) et déclenchent une
+  alerte dès qu'ils sont lus ou téléchargés
 
 
 ## Requirements
@@ -46,8 +54,9 @@ nohup python honeypot.py &
 
 The server listens on port `2121` by default and writes logs to `honeypot.log`.
 Console output uses ANSI colors while the file keeps plain text.
-Set `HONEYFTP_PORT`, `SLACK_WEBHOOK` or `SMTP_SERVER` environment variables to
-enable alerts or change the port.
+Set `HONEYFTP_PORT` to change the port, `SLACK_WEBHOOK` for Slack alerts and the
+`SMTP_*` variables (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`,
+`ALERT_TO`) to control email notifications.
 
 By default the real server only starts after a UDP knock sequence on ports
 `4020`, `4021` puis `4022` depuis la même IP.
