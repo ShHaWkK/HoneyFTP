@@ -758,13 +758,19 @@ class HoneyShell(ftp.FTPShell):
         if path.startswith(".."):
             self.logf.write(f"CWD {path}\n")
             log_operation(f"CWD {path} by {self.avatarId}")
-            STATS["cd"] += 1
-            self.protocol.s_cd += 1 if hasattr(self, 'protocol') else 0
-            return ftp.REQ_FILE_ACTN_COMPLETED_OK,
-        log_operation(f"CWD {path} by {self.avatarId}")
-        STATS["cd"] += 1
-        self.protocol.s_cd += 1 if hasattr(self, 'protocol') else 0
-        return super().ftp_CWD(path)
+            res = ftp.REQ_FILE_ACTN_COMPLETED_OK,
+        else:
+            log_operation(f"CWD {path} by {self.avatarId}")
+            res = super().ftp_CWD(path)
+        def _update(r):
+            if isinstance(r, tuple) and r[0] == ftp.REQ_FILE_ACTN_COMPLETED_OK[0]:
+                STATS["cd"] += 1
+                if hasattr(self, "protocol"):
+                    self.protocol.s_cd += 1
+            return r
+        if isinstance(res, defer.Deferred):
+            return res.addCallback(_update)
+        return _update(res)
 
 # 8) Protocol
 class HoneyFTP(ftp.FTP):
@@ -780,6 +786,7 @@ class HoneyFTP(ftp.FTP):
         self.s_bytes = 0
         self.s_cd = 0
         self.s_ren = 0
+        self.s_deletes = 0
         logging.info("CONNECT %s session=%s", peer, self.session)
         if is_tor_exit(peer):
             alert(
@@ -910,6 +917,7 @@ class HoneyFTP(ftp.FTP):
             self.logf.write(f"DELE {rel}→quarantine/{tag}\n")
             log_operation(f"DELE {rel} by {peer} session={self.session}")
             STATS["deletes"] += 1
+            self.s_deletes += 1
             self.sendLine("250 Deleted")
             return
         except Exception as e:
@@ -991,10 +999,10 @@ class HoneyFTP(ftp.FTP):
             return
         self.logf.write(f"STOR {rel}\n")
         log_operation(f"STOR {rel} by {peer} session={self.session}")
-        STATS["uploads"] += 1
-        self.s_uploads += 1
         d = super().ftp_STOR(path)
         def _update(res):
+            STATS["uploads"] += 1
+            self.s_uploads += 1
             try:
                 self.s_bytes += os.path.getsize(abs_path)
             except Exception:
