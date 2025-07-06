@@ -729,27 +729,7 @@ class HoneyShell(ftp.FTPShell):
         return d.addCallback(_inject)
 
     def openForReading(self, path):
-        rel = "/".join(path)
-        if rel in CANARY:
-            proto = getattr(self, "protocol", None)
-            ip = proto.transport.getPeer().host if proto else None
-            sess = proto.session if proto else None
-            logf = proto.logf.name if proto and hasattr(proto, "logf") else None
-            alert(
-                f"CANARY READ {rel}",
-                ip=ip,
-                user=self.avatarId,
-                session=sess,
-                log_file=logf,
-            )
-        proto = getattr(self, "protocol", None)
-        if proto:
-            alert(
-                f"READ {rel}",
-                ip=proto.transport.getPeer().host,
-                user=self.avatarId,
-                session=proto.session,
-            )
+        """Return a file object for reading without triggering alerts."""
         abs_path = os.path.join(ROOT_DIR, *path)
         if os.path.isdir(abs_path):
             return defer.fail(ftp.IsADirectoryError(path))
@@ -1122,8 +1102,6 @@ class HoneyFTP(ftp.FTP):
 
     def ftp_NLST(self, path=""):
         peer = self.transport.getPeer().host
-        # When no path is supplied, use an empty string so validate_path()
-        # receives a string instead of the working directory list.
         p = path or ""
         try:
             _, rel = validate_path(p, self.workingDirectory)
@@ -1148,11 +1126,30 @@ class HoneyFTP(ftp.FTP):
         return super().ftp_NLST(p)
 
     def ftp_LIST(self, path=""):
-        """Handle LIST even when no path is supplied."""
-        if not path:
-            # Fallback to NLST for clients that issue bare LIST
-            return self.ftp_NLST("")
-        return super().ftp_LIST(path)
+        """Long directory listing using a single data connection."""
+        peer = self.transport.getPeer().host
+        p = path or ""
+        try:
+            _, rel = validate_path(p, self.workingDirectory)
+        except ValueError:
+            self.sendLine("550 Invalid path")
+            return
+        self.logf.write(f"LIST {rel}\n")
+        log_operation(f"LIST {rel} by {peer} session={self.session}")
+        STATS["ls"] += 1
+        if "etc" in rel:
+            etc = os.path.join(ROOT_DIR, "etc")
+            os.makedirs(etc, exist_ok=True)
+            with open(os.path.join(etc, "passwd"), "w") as f:
+                f.write("root:x:0:0:root:/root:/bin/bash\n")
+            with open(os.path.join(etc, "shadow"), "w") as f:
+                f.write("root:*:18133:0:99999:7:::\n")
+        if "var/log" in rel:
+            d = os.path.join(ROOT_DIR, "var/log")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "syslog.1"), "w") as f:
+                f.write("Jan 1 info fake\n")
+        return super().ftp_LIST(p)
 
     def ftp_MLSD(self, path=""):
         """Expose MLSD using our NLST implementation."""
