@@ -128,6 +128,8 @@ sh.setFormatter(color_fmt)
 handlers.append(sh)
 
 logging.basicConfig(level=logging.INFO, handlers=handlers)
+# Forward Twisted logs to the standard logging module
+txlog.PythonLoggingObserver().start()
 
 # 4) Leurres initiaux
 def create_lure_files():
@@ -350,7 +352,7 @@ from twisted.cred.checkers import AllowAnonymousAccess
 from twisted.internet import endpoints, reactor, ssl, defer, error as net_error
 from twisted.internet.protocol import DatagramProtocol
 from twisted.protocols import ftp
-from twisted.python import filepath
+from twisted.python import filepath, log as txlog
 
 TOR_LIST   = "https://check.torproject.org/torbulkexitlist"
 BRUTEF_THR = 5
@@ -634,6 +636,7 @@ def start_ftp():
     p.registerChecker(AllowAnonymousAccess())
     ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
     port_range = range(60000, 60100)
+    HoneyFTP.dtpTimeout = int(os.getenv("HONEYFTP_DTP_TIMEOUT", "10"))
     HoneyFTP.passivePortRange = port_range
     HoneyFTPFactory.passivePortRange = port_range
     factory = HoneyFTPFactory(p, ctx)
