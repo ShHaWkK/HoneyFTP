@@ -883,6 +883,14 @@ class HoneyFTP(ftp.FTP):
             with open(os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a") as rl:
                 rl.write(f"RNTO {old_rel}→{new_rel}\n")
             log_operation(f"RNTO {old_rel}->{new_rel} from {peer} session={self.session}")
+            logging.warning("RENAME %s->%s by %s session=%s", old_rel, new_rel, peer, self.session)
+            alert(
+                f"RENAME {old_rel}->{new_rel}",
+                ip=peer,
+                user=getattr(self, "username", None),
+                session=self.session,
+                log_file=self.logf.name,
+            )
             STATS["renames"] += 1
             self.s_ren += 1
             self.sendLine("250 Rename done")
@@ -906,6 +914,14 @@ class HoneyFTP(ftp.FTP):
             logging.info("DELE %s %s→quarantine/%s", peer, rel, tag)
             self.logf.write(f"DELE {rel}→quarantine/{tag}\n")
             log_operation(f"DELE {rel} by {peer} session={self.session}")
+            logging.warning("DELETE %s by %s session=%s", rel, peer, self.session)
+            alert(
+                f"DELETE {rel}",
+                ip=peer,
+                user=getattr(self, "username", None),
+                session=self.session,
+                log_file=self.logf.name,
+            )
             STATS["deletes"] += 1
             self.s_deletes += 1
             self.sendLine("250 Deleted")
@@ -932,6 +948,15 @@ class HoneyFTP(ftp.FTP):
             return
         res = ftp.FTP.ftp_RMD(self, path)
         log_operation(f"RMD {path} session={self.session}")
+        peer = self.transport.getPeer().host
+        logging.warning("RMD %s by %s session=%s", path, peer, self.session)
+        alert(
+            f"RMD {path}",
+            ip=peer,
+            user=getattr(self, "username", None),
+            session=self.session,
+            log_file=self.logf.name,
+        )
         return res
 
     def ftp_RETR(self, path):
@@ -973,6 +998,14 @@ class HoneyFTP(ftp.FTP):
             )
         self.logf.write(f"RETR {rel}\n")
         log_operation(f"RETR {rel} by {peer} session={self.session}")
+        logging.warning("RETR %s by %s session=%s", rel, peer, self.session)
+        alert(
+            f"RETR {rel}",
+            ip=peer,
+            user=getattr(self, "username", None),
+            session=self.session,
+            log_file=self.logf.name,
+        )
         STATS["downloads"] += 1
         self.s_downloads += 1
         return super().ftp_RETR(path)
@@ -989,6 +1022,14 @@ class HoneyFTP(ftp.FTP):
             return
         self.logf.write(f"STOR {rel}\n")
         log_operation(f"STOR {rel} by {peer} session={self.session}")
+        logging.warning("UPLOAD %s by %s session=%s", rel, peer, self.session)
+        alert(
+            f"UPLOAD {rel}",
+            ip=peer,
+            user=getattr(self, "username", None),
+            session=self.session,
+            log_file=self.logf.name,
+        )
         d = super().ftp_STOR(path)
         def _update(res):
             STATS["uploads"] += 1

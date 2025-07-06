@@ -224,3 +224,16 @@ lister ou afficher les sessions et voir les statistiques globales.
 - Scripts d'attaque plus réalistes et modules de reconnaissance
 
 
+
+## Docker Isolation
+
+A helper script `start_honeypot_docker.sh` builds a restricted Docker image and
+runs the honeypot with minimal privileges. It also generates a TLS certificate
+using `openssl` if none is present.
+
+```bash
+./start_honeypot_docker.sh
+```
+
+The container is started read-only and drops all capabilities for simple
+isolation.
