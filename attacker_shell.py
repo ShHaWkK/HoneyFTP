@@ -38,6 +38,7 @@ import argparse
 from ftplib import FTP_TLS, error_perm
 from cmd import Cmd
 from pathlib import Path
+import io
 from typing import Optional
 from rich import print as rprint
 from rich.progress import Progress
@@ -165,11 +166,13 @@ Liste les fichiers du répertoire courant ou indiqué."""
             return
         path = arg or "."
         try:
-            for name in self.ftp.nlst(path):
-                icon = "\U0001F4C1" if "." not in name else "\U0001F4C4"
-                rprint(f"{icon} {name}")
+            lines = []
+            resp = self.ftp.retrlines(f"LIST {path}", lines.append)
+            for line in lines:
+                print(line)
+            print(f"< {resp}")
         except Exception as e:
-            print(f"Erreur NLST : {e}")
+            print(f"Erreur LIST : {e}")
 
     def do_cd(self, arg):
         """cd <répertoire>"""
@@ -206,6 +209,47 @@ Liste les fichiers du répertoire courant ou indiqué."""
             print(f"< {resp}")
         except Exception as e:
             print(f"Erreur RMD : {e}")
+
+    def do_rm(self, arg):
+        """rm <fichier> - supprime un fichier"""
+        if not self._ensure_login():
+            return
+        if not arg:
+            print("Usage: rm <fichier>")
+            return
+        try:
+            resp = self.ftp.delete(arg)
+            print(f"< {resp}")
+        except Exception as e:
+            print(f"Erreur DELETE : {e}")
+
+    def do_mv(self, arg):
+        """mv <ancien> <nouveau> - renomme un fichier"""
+        if not self._ensure_login():
+            return
+        parts = arg.split()
+        if len(parts) != 2:
+            print("Usage: mv <ancien> <nouveau>")
+            return
+        old, new = parts
+        try:
+            resp = self.ftp.rename(old, new)
+            print(f"< {resp}")
+        except Exception as e:
+            print(f"Erreur RNFR/RNTO : {e}")
+
+    def do_touch(self, arg):
+        """touch <fichier> - crée un fichier vide"""
+        if not self._ensure_login():
+            return
+        if not arg:
+            print("Usage: touch <fichier>")
+            return
+        try:
+            resp = self.ftp.storbinary(f"STOR {arg}", io.BytesIO(b""))
+            print(f"< {resp}")
+        except Exception as e:
+            print(f"Erreur TOUCH : {e}")
 
     def do_pwd(self, arg):
         """Affiche le répertoire courant."""
@@ -252,9 +296,15 @@ Liste les fichiers du répertoire courant ou indiqué."""
             return
         remote = parts[1] if len(parts) > 1 else local.name
         try:
-            with open(local, "rb") as f:
-                self.ftp.storbinary(f"STOR {remote}", f)
-            print("Upload terminé")
+            size = local.stat().st_size
+            with open(local, "rb") as f, Progress() as p:
+                task = p.add_task(f"PUT {remote}", total=size or None)
+
+                def cb(data):
+                    p.update(task, advance=len(data))
+
+                resp = self.ftp.storbinary(f"STOR {remote}", f, callback=cb)
+            print(f"< {resp}")
         except Exception as e:
             print(f"Erreur STOR : {e}")
 
@@ -333,6 +383,12 @@ Envoie une commande brute non gérée autrement."""
         complete_mkdir
     ) = (
         complete_rmdir
+    ) = (
+        complete_rm
+    ) = (
+        complete_mv
+    ) = (
+        complete_touch
     ) = _complete_remote
 
     def do_quit(self, arg):
