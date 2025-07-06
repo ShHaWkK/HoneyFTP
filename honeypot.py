@@ -25,6 +25,7 @@ import tempfile
 import sys, subprocess, shutil, random, logging, smtplib
 import json, atexit, base64, threading, argparse, re, mimetypes, hashlib
 from twisted.internet import defer
+from twisted.python import log as txlog
 from datetime import datetime, timedelta, timezone
 
 # 1) Bootstrap pip deps
@@ -352,7 +353,7 @@ from twisted.cred.checkers import AllowAnonymousAccess
 from twisted.internet import endpoints, reactor, ssl, defer, error as net_error
 from twisted.internet.protocol import DatagramProtocol
 from twisted.protocols import ftp
-from twisted.python import filepath, log as txlog
+from twisted.python import filepath
 
 TOR_LIST   = "https://check.torproject.org/torbulkexitlist"
 BRUTEF_THR = 5
