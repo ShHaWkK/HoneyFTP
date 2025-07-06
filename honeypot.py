@@ -20,7 +20,7 @@ Fonctionnalités :
 – Logs centraux + par session
 """
 
-import os, uuid, zipfile, fnmatch
+import os, uuid, zipfile
 import tempfile
 import sys, subprocess, shutil, random, logging, smtplib
 import json, atexit, base64, threading, argparse, re, mimetypes, hashlib
@@ -65,7 +65,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from colorama import init as color_init, Fore, Style
-from typing import Optional, List
+from typing import Optional
 
 # 2) Détermine le répertoire de base
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -450,20 +450,6 @@ def alert(
         except Exception:
             pass
 
-def _send_alert(kind: str, paths: List[str], proto=None) -> None:
-    """Send a single alert listing multiple directory entries."""
-    msg = f"{kind} ({len(paths)})"
-    body = "\n".join(paths)
-    alert(
-        f"{msg}\n{body}",
-        ip=getattr(getattr(proto, "transport", None), "getPeer", lambda: None)().host
-        if proto and getattr(proto, "transport", None)
-        else None,
-        user=getattr(proto, "username", None),
-        session=getattr(proto, "session", None),
-        log_file=getattr(proto, "logf", None).name if proto and hasattr(proto, "logf") else None,
-    )
-
 def log_operation(msg: str):
     """Append an entry to the operations log."""
     try:
@@ -744,6 +730,18 @@ class HoneyShell(ftp.FTPShell):
 
     def openForReading(self, path):
         rel = "/".join(path)
+        if rel in CANARY:
+            proto = getattr(self, "protocol", None)
+            ip = proto.transport.getPeer().host if proto else None
+            sess = proto.session if proto else None
+            logf = proto.logf.name if proto and hasattr(proto, "logf") else None
+            alert(
+                f"CANARY READ {rel}",
+                ip=ip,
+                user=self.avatarId,
+                session=sess,
+                log_file=logf,
+            )
         abs_path = os.path.join(ROOT_DIR, *path)
         if os.path.isdir(abs_path):
             return defer.fail(ftp.IsADirectoryError(path))
@@ -800,10 +798,6 @@ class HoneyFTP(ftp.FTP):
         )
         super().connectionLost(reason)
 
-    def _send_alert(self, cmd: str, paths: List[str]) -> None:
-        """Wrapper around global _send_alert using this protocol's context."""
-        _send_alert(cmd, paths, self)
-
     def ftp_USER(self, u):
         peer = self.transport.getPeer().host
         self.username = u
@@ -848,15 +842,10 @@ class HoneyFTP(ftp.FTP):
         return d
 
     def ftp_CWD(self, path: bytes):
-        try:
-            _, rel = validate_path(path.decode("latin-1") if isinstance(path, bytes) else path, self.workingDirectory)
-        except Exception:
-            rel = path.decode("latin-1") if isinstance(path, bytes) else str(path)
         result = super().ftp_CWD(path)
         STATS["cd"] += 1
         self.s_cd += 1
-        log_operation(f"CWD {rel} by {getattr(self, 'username', '')}")
-        self._send_alert("CWD", [rel])
+        log_operation(f"CWD {path!r} by {getattr(self, 'username', '')}")
         return result
 
     def ftp_RNFR(self, fn):
@@ -896,7 +885,6 @@ class HoneyFTP(ftp.FTP):
             log_operation(f"RNTO {old_rel}->{new_rel} from {peer} session={self.session}")
             STATS["renames"] += 1
             self.s_ren += 1
-            self._send_alert("RN", [old_rel, new_rel])
             self.sendLine("250 Rename done")
             return
         except Exception as e:
@@ -920,7 +908,6 @@ class HoneyFTP(ftp.FTP):
             log_operation(f"DELE {rel} by {peer} session={self.session}")
             STATS["deletes"] += 1
             self.s_deletes += 1
-            self._send_alert("DELE", [rel])
             self.sendLine("250 Deleted")
             return
         except Exception as e:
@@ -935,7 +922,6 @@ class HoneyFTP(ftp.FTP):
             return
         res = ftp.FTP.ftp_MKD(self, path)
         log_operation(f"MKD {path} session={self.session}")
-        self._send_alert("MKD", [path if isinstance(path, str) else path.decode("latin-1")])
         return res
 
     def ftp_RMD(self, path):
@@ -946,7 +932,6 @@ class HoneyFTP(ftp.FTP):
             return
         res = ftp.FTP.ftp_RMD(self, path)
         log_operation(f"RMD {path} session={self.session}")
-        self._send_alert("RMD", [path if isinstance(path, str) else path.decode("latin-1")])
         return res
 
     def ftp_RETR(self, path):
@@ -990,7 +975,6 @@ class HoneyFTP(ftp.FTP):
         log_operation(f"RETR {rel} by {peer} session={self.session}")
         STATS["downloads"] += 1
         self.s_downloads += 1
-        self._send_alert("RETR", [rel])
         return super().ftp_RETR(path)
 
     def ftp_STOR(self, path):
@@ -1020,18 +1004,18 @@ class HoneyFTP(ftp.FTP):
                 getattr(self, "username", "anonymous"),
                 peer,
             )
-            self._send_alert("STOR", [rel])
             return res
         d.addCallback(_update)
         return d
 
     def ftp_NLST(self, path):
         peer = self.transport.getPeer().host
+        # When no path is supplied, use an empty string so validate_path()
+        # receives a string instead of the working directory list.
         p = path or ""
         try:
-            segments = ftp.toSegments(self.workingDirectory, p)
             _, rel = validate_path(p, self.workingDirectory)
-        except Exception:
+        except ValueError:
             self.sendLine("550 Invalid path")
             return
         self.logf.write(f"NLST {rel}\n")
@@ -1049,89 +1033,14 @@ class HoneyFTP(ftp.FTP):
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, "syslog.1"), "w") as f:
                 f.write("Jan 1 info fake\n")
-
-        if ftp._isGlobbingExpression(segments):
-            glob = segments.pop()
-        else:
-            glob = None
-
-        d = self.shell.list(segments)
-
-        def _send(res):
-            self.reply(ftp.DATA_CNX_ALREADY_OPEN_START_XFR)
-            names = []
-            lines = []
-            for name, _ in res:
-                if not glob or fnmatch.fnmatch(name, glob):
-                    enc = self._encodeName(name)
-                    lines.append(enc)
-                    names.append(name.decode("utf-8", "ignore") if isinstance(name, bytes) else name)
-            if lines:
-                data = b"\r\n".join(lines) + b"\r\n"
-                self.dtpInstance.transport.write(data)
-            self.dtpInstance.transport.loseConnection()
-            self._send_alert("LS", names)
-            return (ftp.TXFR_COMPLETE_OK,)
-
-        def _err(_):
-            self.dtpInstance.transport.loseConnection()
-            return (ftp.TXFR_COMPLETE_OK,)
-
-        d.addCallbacks(_send, _err)
-        return d
+        return super().ftp_NLST(path)
 
     def ftp_LIST(self, path=""):
-        """Handle LIST and aggregate results for alerting."""
+        """Handle LIST even when no path is supplied."""
         if not path:
+            # Fallback to NLST for clients that issue bare LIST
             return self.ftp_NLST("")
-
-        peer = self.transport.getPeer().host
-        try:
-            segments = ftp.toSegments(self.workingDirectory, path)
-            _, rel = validate_path(path, self.workingDirectory)
-        except Exception:
-            self.sendLine("550 Invalid path")
-            return
-
-        self.logf.write(f"LIST {rel}\n")
-        log_operation(f"LIST {rel} by {peer} session={self.session}")
-        STATS["ls"] += 1
-
-        d = self.shell.list(
-            segments,
-            (
-                "size",
-                "directory",
-                "permissions",
-                "hardlinks",
-                "modified",
-                "owner",
-                "group",
-            ),
-        )
-
-        def _send(res):
-            self.reply(ftp.DATA_CNX_ALREADY_OPEN_START_XFR)
-            names = []
-            lines = []
-            for name, attrs in res:
-                enc = self._encodeName(name)
-                line = self.dtpInstance._formatOneListResponse(enc, *attrs)
-                lines.append(line)
-                names.append(name.decode("utf-8", "ignore") if isinstance(name, bytes) else name)
-            if lines:
-                data = b"\r\n".join(lines) + b"\r\n"
-                self.dtpInstance.transport.write(data)
-            self.dtpInstance.transport.loseConnection()
-            self._send_alert("LS", names)
-            return (ftp.TXFR_COMPLETE_OK,)
-
-        def _err(_):
-            self.dtpInstance.transport.loseConnection()
-            return (ftp.TXFR_COMPLETE_OK,)
-
-        d.addCallbacks(_send, _err)
-        return d
+        return super().ftp_LIST(path)
 
     def ftp_MLSD(self, path=""):
         """Expose MLSD using our NLST implementation."""
