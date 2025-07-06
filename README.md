@@ -64,6 +64,7 @@ Console output uses ANSI colors while the file keeps plain text.
 Set `HONEYFTP_PORT`, `SLACK_WEBHOOK` or `SMTP_SERVER` environment variables to
 enable alerts or change the port. Définir `HONEYFTP_EXPLICIT=1` démarre le
 serveur en mode FTPES et attend la commande `AUTH TLS`.
+Set `HONEYFTP_DTP_TIMEOUT` to modify the 10 second passive connection delay.
 
 By default the real server only starts after a UDP knock sequence on ports
 `4020`, `4021` puis `4022` depuis la même IP.
@@ -77,6 +78,25 @@ sudo ufw allow 2121/tcp
 Data connections use a passive range of **60000‑60100**. If those ports are
 blocked, commands like `NLST` or `RETR` will hang with a timeout. Make sure the
 range is reachable, especially when testing locally with the attacker script.
+
+## Troubleshooting
+
+If the console shows an error similar to::
+
+    Unhandled Error
+    twisted.protocols.ftp.PortConnectionError: DTPFactory timeout
+
+the honeypot opened a passive data port but the client never connected before
+the 10 second deadline elapsed. Typical causes are:
+
+- Issuing `PASV` manually without sending `LIST` or `RETR` afterwards. Let the
+  FTP client handle `PASV` automatically when performing a transfer.
+- Firewall or NAT rules blocking the passive range `60000‑60100`.
+- A mismatch of TLS settings where the client opens the data connection without
+  encryption while the server expects FTPS.
+
+Ensure the passive ports are reachable and that your client initiates the data
+channel correctly (including TLS after `AUTH TLS` when needed).
 
 ## Deployment on Proxmox
 
