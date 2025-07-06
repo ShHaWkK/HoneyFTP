@@ -24,6 +24,7 @@ import os, uuid, zipfile
 import tempfile
 import sys, subprocess, shutil, random, logging, smtplib
 import json, atexit, base64, threading, argparse, re, mimetypes, hashlib
+import fnmatch
 from twisted.internet import defer
 from twisted.python import log as txlog
 from datetime import datetime, timedelta, timezone
@@ -65,7 +66,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from colorama import init as color_init, Fore, Style
-from typing import Optional
+from typing import Optional, List
 
 # 2) Détermine le répertoire de base
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -829,11 +830,12 @@ class HoneyFTP(ftp.FTP):
         d.addCallbacks(onSucc,onFail)
         return d
 
-    def _send_alert(self, cmd: str, rel: str) -> None:
-        """Helper to send an e-mail alert for a specific command."""
+    def _send_alert(self, cmd: str, paths: List[str]) -> None:
+        """Helper to send an aggregated e-mail alert."""
         peer = self.transport.getPeer().host
+        details = "\n".join(paths)
         alert(
-            f"{cmd} {rel}",
+            f"{cmd}\n{details}" if details else cmd,
             ip=peer,
             user=getattr(self, "username", None),
             session=self.session,
@@ -847,7 +849,7 @@ class HoneyFTP(ftp.FTP):
         self.s_cd += 1
         log_operation(f"CWD {path!r} by {getattr(self, 'username', '')}")
         rel = path.decode("latin-1") if isinstance(path, bytes) else str(path)
-        self._send_alert("CWD", rel)
+        self._send_alert("CWD", [rel])
         return result
 
     def ftp_RNFR(self, fn):
@@ -909,7 +911,7 @@ class HoneyFTP(ftp.FTP):
             )
             STATS["renames"] += 1
             self.s_ren += 1
-            self._send_alert("RN", f"{old_rel}->{new_rel}")
+            self._send_alert("RN", [f"{old_rel}->{new_rel}"])
             return result
 
         d.addCallback(_log)
@@ -946,7 +948,7 @@ class HoneyFTP(ftp.FTP):
             log_operation(f"DELE {rel} by {peer} session={self.session}")
             STATS["deletes"] += 1
             self.s_deletes += 1
-            self._send_alert("DELE", rel)
+            self._send_alert("DELE", [rel])
             return result
 
         def _cleanup(err):
@@ -969,7 +971,7 @@ class HoneyFTP(ftp.FTP):
         res = ftp.FTP.ftp_MKD(self, path)
         log_operation(f"MKD {path} session={self.session}")
         rel = path.decode("latin-1") if isinstance(path, bytes) else str(path)
-        self._send_alert("MKD", rel)
+        self._send_alert("MKD", [rel])
         return res
 
     def ftp_RMD(self, path):
@@ -982,7 +984,7 @@ class HoneyFTP(ftp.FTP):
         res = ftp.FTP.ftp_RMD(self, path)
         log_operation(f"RMD {path} session={self.session}")
         rel = path.decode("latin-1") if isinstance(path, bytes) else str(path)
-        self._send_alert("RMD", rel)
+        self._send_alert("RMD", [rel])
         return res
 
     def ftp_RETR(self, path):
@@ -1026,7 +1028,7 @@ class HoneyFTP(ftp.FTP):
         log_operation(f"RETR {rel} by {peer} session={self.session}")
         STATS["downloads"] += 1
         self.s_downloads += 1
-        self._send_alert("RETR", rel)
+        self._send_alert("RETR", [rel])
         return super().ftp_RETR(path)
 
     def ftp_STOR(self, path):
@@ -1059,14 +1061,14 @@ class HoneyFTP(ftp.FTP):
             except Exception:
                 size = 0
             if size == 0:
-                self._send_alert("ZERO-BYTE UPLOAD", rel)
+                self._send_alert("ZERO-BYTE UPLOAD", [rel])
                 try:
                     tag = f"zero_{uuid.uuid4().hex}"
                     shutil.copy2(abs_path, os.path.join(QUAR_DIR, tag))
                 except Exception:
                     pass
             else:
-                self._send_alert("UPLOAD", rel)
+                self._send_alert("UPLOAD", [rel])
             reactor.callInThread(
                 sandbox_analyze,
                 abs_path,
@@ -1090,7 +1092,41 @@ class HoneyFTP(ftp.FTP):
         self.logf.write(f"NLST {rel}\n")
         log_operation(f"NLST {rel} by {peer} session={self.session}")
         STATS["ls"] += 1
-        return ftp.FTP.ftp_NLST(self, p)
+
+        if self.dtpInstance is None or not self.dtpInstance.isConnected:
+            return defer.fail(ftp.BadCmdSequenceError("must send PORT or PASV before RETR"))
+
+        try:
+            segments = ftp.toSegments(self.workingDirectory, p)
+        except ftp.InvalidPath:
+            return defer.fail(FileNotFoundError(p))
+
+        if ftp._isGlobbingExpression(segments):
+            glob = segments.pop()
+        else:
+            glob = None
+
+        d = self.shell.list(segments)
+
+        def cbList(results, glob):
+            self.reply(ftp.DATA_CNX_ALREADY_OPEN_START_XFR)
+            names = []
+            for name, _ in results:
+                if not glob or fnmatch.fnmatch(name, glob):
+                    enc = self._encodeName(name)
+                    names.append(enc.decode("latin-1") if isinstance(enc, bytes) else enc)
+                    self.dtpInstance.sendLine(enc)
+            self.dtpInstance.transport.loseConnection()
+            self._send_alert("LS", names)
+            return (ftp.TXFR_COMPLETE_OK,)
+
+        def listErr(_):
+            self.dtpInstance.transport.loseConnection()
+            return (ftp.TXFR_COMPLETE_OK,)
+
+        d.addCallback(cbList, glob)
+        d.addErrback(listErr)
+        return d
 
     def ftp_LIST(self, path=""):
         """Long directory listing using a single data connection."""
@@ -1104,7 +1140,44 @@ class HoneyFTP(ftp.FTP):
         self.logf.write(f"LIST {rel}\n")
         log_operation(f"LIST {rel} by {peer} session={self.session}")
         STATS["ls"] += 1
-        return ftp.FTP.ftp_LIST(self, p)
+
+        if self.dtpInstance is None or not self.dtpInstance.isConnected:
+            return defer.fail(ftp.BadCmdSequenceError("must send PORT or PASV before RETR"))
+
+        if p.lower() in ["-a", "-l", "-la", "-al"]:
+            p = ""
+
+        try:
+            segments = ftp.toSegments(self.workingDirectory, p)
+        except ftp.InvalidPath:
+            return defer.fail(FileNotFoundError(p))
+
+        d = self.shell.list(
+            segments,
+            (
+                "size",
+                "directory",
+                "permissions",
+                "hardlinks",
+                "modified",
+                "owner",
+                "group",
+            ),
+        )
+
+        def gotListing(results):
+            self.reply(ftp.DATA_CNX_ALREADY_OPEN_START_XFR)
+            names = []
+            for name, attrs in results:
+                enc = self._encodeName(name)
+                names.append(enc.decode("latin-1") if isinstance(enc, bytes) else enc)
+                self.dtpInstance.sendListResponse(enc, attrs)
+            self.dtpInstance.transport.loseConnection()
+            self._send_alert("LS", names)
+            return (ftp.TXFR_COMPLETE_OK,)
+
+        d.addCallback(gotListing)
+        return d
 
     def ftp_MLSD(self, path=""):
         """Expose MLSD using our NLST implementation."""
