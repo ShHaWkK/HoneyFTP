@@ -155,6 +155,9 @@ python attaquant.py --script attack
 # Démo complète
 python attaquant.py --script demo
 
+# Test complet de toutes les commandes
+python attack_all.py <ip> 2121
+
 # Rejouer des commandes depuis un fichier
 python attaquant.py --commands commandes.txt
 ```
@@ -167,6 +170,9 @@ puis ouvre FileZilla avec les informations d'identification fournies :
 ```bash
 ./knock_filezilla.py <ip> [port] [user] [password]
 ```
+
+Consultez **COMMANDS.md** pour la liste complète des commandes disponibles dans
+le client interactif.
 
 Par défaut le port est `2121` et l'utilisateur `anonymous`.
 
