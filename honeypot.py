@@ -881,9 +881,10 @@ class HoneyFTP(ftp.FTP):
         try:
             abs_path, rel = validate_path(path, self.workingDirectory)
             if os.path.isdir(abs_path):
-                os.makedirs(os.path.join(ROOT_DIR, ".zipcache"), exist_ok=True)
+                cache_dir = os.path.join(ROOT_DIR, ".zipcache")
+                os.makedirs(cache_dir, exist_ok=True)
                 zip_name = f"dir_{uuid.uuid4()}.zip"
-                zip_path = os.path.join(ROOT_DIR, ".zipcache", zip_name)
+                zip_path = os.path.join(cache_dir, zip_name)
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     for root, dirs, files in os.walk(abs_path):
                         for fname in files:
