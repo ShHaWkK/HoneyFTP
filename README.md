@@ -27,6 +27,16 @@ session.
 - Journaux colorés sur la console et `honeypot.log` au format texte
 - Commandes supplémentaires `SITE UPTIME` et `SITE STATS`
 - Script `attaquant.py` exécutable en mode non interactif (`--script` ou `--commands`)
+- Bannières réalistes (`vsFTPd`, `ProFTPD`, `FileZilla Server`, `Pure-FTPd`)
+- Support complet des commandes FTP/FTPS (LIST, NLST, CWD, MKD/RMD, RETR/STOR, RNFR/RNTO, STAT, MODE, FEAT, PBSZ/PROT…)
+- Modes passif et actif, FTPS implicite ou FTPES explicite (`AUTH TLS`)
+- Tarpit progressif en cas de brute-force ou de scans rapides
+
+Ces améliorations rendent le honeypot plus crédible et utile. Les bannières
+imitent des serveurs FTP connus pour tromper les attaquants. Le support des
+commandes et des deux modes FTPS/FTPES permet d'observer un large éventail de
+comportements. Enfin, le tarpit ralentit les attaques automatisées tout en
+enregistrant chaque tentative.
 
 
 ## Requirements
@@ -52,7 +62,8 @@ nohup python honeypot.py &
 The server listens on port `2121` by default and writes logs to `honeypot.log`.
 Console output uses ANSI colors while the file keeps plain text.
 Set `HONEYFTP_PORT`, `SLACK_WEBHOOK` or `SMTP_SERVER` environment variables to
-enable alerts or change the port.
+enable alerts or change the port. Définir `HONEYFTP_EXPLICIT=1` démarre le
+serveur en mode FTPES et attend la commande `AUTH TLS`.
 
 By default the real server only starts after a UDP knock sequence on ports
 `4020`, `4021` puis `4022` depuis la même IP.

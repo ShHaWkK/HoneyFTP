@@ -82,7 +82,9 @@ LOG_FILE = os.path.join(BASE, "honeypot.log")
 OP_LOG   = os.path.join(BASE, "operations.log")
 PID_FILE = os.path.join(BASE, "honeypot.pid")
 VERSION  = "1.1"
+BANNERS = ["(vsFTPd 3.0.5)", "ProFTPD 1.3.8 Server", "FileZilla Server 0.9.60 beta", "Pure-FTPd 1.0.49"]
 SERVER_START = datetime.now(timezone.utc)
+EXPLICIT = os.getenv("HONEYFTP_EXPLICIT", "0") == "1"
 for d in (ROOT_DIR, QUAR_DIR, SESS_DIR, SANDBOX_DIR):
     os.makedirs(d, exist_ok=True)
 
@@ -624,16 +626,21 @@ def start_ftp():
     p.registerChecker(AcceptAllChecker())
     p.registerChecker(AllowAnonymousAccess())
     ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
-    def _listen_ssl(port, factory, *a, **kw):
-        return reactor.listenSSL(port, factory, ctx, *a, **kw)
-    HoneyFTP.listenFactory = staticmethod(_listen_ssl)
     port_range = range(60000, 60100)
     HoneyFTP.passivePortRange = port_range
     HoneyFTPFactory.passivePortRange = port_range
     factory = HoneyFTPFactory(p, ctx)
     factory.passivePortRange = port_range
-    endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(factory)
-    logging.info("Honeypot FTPS listening on port %s", PORT)
+    if EXPLICIT:
+        HoneyFTP.listenFactory = reactor.listenTCP
+        endpoints.TCP4ServerEndpoint(reactor, PORT).listen(factory)
+        logging.info("Honeypot FTPES listening on port %s", PORT)
+    else:
+        def _listen_ssl(port, factory, *a, **kw):
+            return reactor.listenSSL(port, factory, ctx, *a, **kw)
+        HoneyFTP.listenFactory = staticmethod(_listen_ssl)
+        endpoints.SSL4ServerEndpoint(reactor, PORT, ctx).listen(factory)
+        logging.info("Honeypot FTPS listening on port %s", PORT)
     try:
         with open(PID_FILE, "w") as f:
             f.write(str(os.getpid()))
@@ -748,6 +755,7 @@ class HoneyFTP(ftp.FTP):
                 log_file=self.logf.name,
             )
         self.token = create_honeytoken(peer, self.session)
+        self._tls = not EXPLICIT
 
     def connectionLost(self, reason):
         peer = getattr(self.transport.getPeer(),"host","?")
@@ -1125,6 +1133,32 @@ class HoneyFTP(ftp.FTP):
             self.sendLine("200 Protection level ignored")
         return
 
+    def ftp_MODE(self, param):
+        p = (param or "").strip().upper()
+        if p == "S":
+            self.sendLine("200 MODE set to S")
+        else:
+            self.sendLine("504 Unsupported MODE")
+        return
+
+    def ftp_FEAT(self):
+        self.sendLine("211-Features:")
+        for f in ["UTF8", "PASV", "EPSV", "EPRT", "PBSZ", "PROT", "AUTH TLS"]:
+            self.sendLine(" " + f)
+        self.sendLine("211 End")
+        return
+
+    def ftp_AUTH(self, arg):
+        proto = (arg or "").strip().upper()
+        if proto in {"TLS", "SSL"}:
+            self.sendLine("234 Proceed with negotiation.")
+            if EXPLICIT and not getattr(self, "_tls", False):
+                self.transport.startTLS(self.factory.ctx)
+                self._tls = True
+            return
+        self.sendLine("504 Unsupported AUTH")
+        return
+
     def ftp_TYPE(self, params):
         """Force binary mode regardless of client request."""
         self.binary = True
@@ -1134,9 +1168,11 @@ class HoneyFTP(ftp.FTP):
     def getDTPPort(self, factory, interface=""):
         for portn in self.passivePortRange:
             try:
-                return reactor.listenSSL(portn, factory,
-                                         self.factory.ctx,
-                                         interface=interface)
+                if EXPLICIT and not getattr(self, "_tls", False):
+                    return reactor.listenTCP(portn, factory, interface=interface)
+                return reactor.listenSSL(
+                    portn, factory, self.factory.ctx, interface=interface
+                )
             except net_error.CannotListenError:
                 continue
         raise net_error.CannotListenError("", portn,
@@ -1146,23 +1182,29 @@ class HoneyFTP(ftp.FTP):
         peer, cmd = self.transport.getPeer().host, line.decode("latin-1").strip()
         logging.info("CMD %s %s", peer, cmd)
         self.logf.write(cmd+"\n")
-        self.count+=1
-        if self.count > 20 and (
-            datetime.now(timezone.utc) - self.start
-        ).total_seconds() < 10:
+        self.count += 1
+        now = datetime.now(timezone.utc)
+        if self.count > 20 and (now - self.start).total_seconds() < 10:
             alert(
                 "Fast scan detected",
                 ip=peer,
                 session=self.session,
                 log_file=self.logf.name,
             )
-            reactor.callLater(random.uniform(2,5), lambda:None)
-        return super().lineReceived(line)
+            self.scan_delay = min(getattr(self, "scan_delay", 0) + 1, 8)
+        else:
+            self.scan_delay = max(getattr(self, "scan_delay", 0) - 1, 0)
+        delay = getattr(self, "scan_delay", 0)
+        if delay:
+            reactor.callLater(delay, super().lineReceived, line)
+        else:
+            super().lineReceived(line)
+        return
 
 # 9) Factory & Realm
 class HoneyFTPFactory(ftp.FTPFactory):
     protocol       = HoneyFTP
-    welcomeMessage = "(vsFTPd 2.3.4)"
+    welcomeMessage = random.choice(BANNERS)
 
     def __init__(self, portal, ctx):
         super().__init__(portal)
