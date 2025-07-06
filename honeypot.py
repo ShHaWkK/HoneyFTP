@@ -754,23 +754,6 @@ class HoneyShell(ftp.FTPShell):
         else:
             return defer.succeed(ftp._FileReader(f))
 
-    def ftp_CWD(self, path):
-        if path.startswith(".."):
-            self.logf.write(f"CWD {path}\n")
-            log_operation(f"CWD {path} by {self.avatarId}")
-            res = ftp.REQ_FILE_ACTN_COMPLETED_OK,
-        else:
-            log_operation(f"CWD {path} by {self.avatarId}")
-            res = super().ftp_CWD(path)
-        def _update(r):
-            if isinstance(r, tuple) and r[0] == ftp.REQ_FILE_ACTN_COMPLETED_OK[0]:
-                STATS["cd"] += 1
-                if hasattr(self, "protocol"):
-                    self.protocol.s_cd += 1
-            return r
-        if isinstance(res, defer.Deferred):
-            return res.addCallback(_update)
-        return _update(res)
 
 # 8) Protocol
 class HoneyFTP(ftp.FTP):
@@ -857,6 +840,13 @@ class HoneyFTP(ftp.FTP):
             return r
         d.addCallbacks(onSucc,onFail)
         return d
+
+    def ftp_CWD(self, path: bytes):
+        result = super().ftp_CWD(path)
+        STATS["cd"] += 1
+        self.s_cd += 1
+        log_operation(f"CWD {path!r} by {getattr(self, 'username', '')}")
+        return result
 
     def ftp_RNFR(self, fn):
         peer = self.transport.getPeer().host
