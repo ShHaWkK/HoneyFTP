@@ -20,8 +20,9 @@ Fonctionnalités :
 – Logs centraux + par session
 """
 
-import os, tempfile, zipfile
-import sys, subprocess, shutil, uuid, random, logging, smtplib
+import os, uuid, zipfile
+import tempfile
+import sys, subprocess, shutil, random, logging, smtplib
 import json, atexit, base64, threading, argparse, re, mimetypes, hashlib
 from twisted.internet import defer
 from datetime import datetime, timedelta, timezone
@@ -880,17 +881,17 @@ class HoneyFTP(ftp.FTP):
         try:
             abs_path, rel = validate_path(path, self.workingDirectory)
             if os.path.isdir(abs_path):
-                # crée un ZIP temporaire de tout le contenu du répertoire
-                tmpf = tempfile.NamedTemporaryFile(prefix="honeypot_", suffix=".zip", delete=False)
-                with zipfile.ZipFile(tmpf, "w", zipfile.ZIP_DEFLATED) as zf:
+                os.makedirs(os.path.join(ROOT_DIR, ".zipcache"), exist_ok=True)
+                zip_name = f"dir_{uuid.uuid4()}.zip"
+                zip_path = os.path.join(ROOT_DIR, ".zipcache", zip_name)
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     for root, dirs, files in os.walk(abs_path):
                         for fname in files:
                             full = os.path.join(root, fname)
                             arc = os.path.relpath(full, abs_path)
                             zf.write(full, arc)
-                tmpf.flush()
-                f = open(tmpf.name, "rb")
-                return defer.succeed(ftp._FileReader(f))
+                rel_zip = os.path.join(".zipcache", zip_name)
+                return super().ftp_RETR(rel_zip)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
