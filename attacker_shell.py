@@ -164,7 +164,9 @@ Authentifie l'utilisateur (anonymous par défaut)."""
 Liste les fichiers du répertoire courant ou indiqué."""
         if not self._ensure_login():
             return
-        path = arg or "."
+        # When no argument is supplied, send an empty string so the server
+        # lists the root directory rather than ``."``.
+        path = arg or ""
         try:
             lines = []
             resp = self.ftp.retrlines(f"LIST {path}", lines.append)
@@ -178,8 +180,15 @@ Liste les fichiers du répertoire courant ou indiqué."""
         """cd <répertoire>"""
         if not self._ensure_login():
             return
+        path = arg or ""
         try:
-            resp = self.ftp.cwd(arg)
+            # ``ftplib`` replaces an empty string with ``'.'`` when using
+            # ``cwd()``. Use ``sendcmd`` directly so the server receives an
+            # truly empty argument when requested.
+            if path == "":
+                resp = self.ftp.sendcmd("CWD")
+            else:
+                resp = self.ftp.cwd(path)
             print(f"< {resp}")
         except Exception as e:
             print(f"Erreur CWD : {e}")

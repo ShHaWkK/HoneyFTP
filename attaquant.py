@@ -98,7 +98,9 @@ def do_login(ftp, user, pwd):
 
 def do_nlst(ftp):
     try:
-        files = ftp.nlst('.')
+        # Pass an empty string so the server lists the root directory by
+        # default instead of the current directory indicator ``.'.``
+        files = ftp.nlst('')
         print(Fore.CYAN + "← FILES:")
         for i, f in enumerate(files, 1):
             print(f"   {i:2d}. {f}")
