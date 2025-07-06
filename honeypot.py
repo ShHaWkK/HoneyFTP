@@ -1484,6 +1484,7 @@ def menu_loop():
         elif choice == "5":
             sid = input("ID de session > ").strip()
             show_session(sid)
+            input("Appuyez sur Entrée pour continuer")
         elif choice == "6":
             show_stats()
         elif choice == "7":
@@ -1501,6 +1502,7 @@ def menu_loop():
                 if action.startswith("Analyser"):
                     if sid:
                         show_session(sid)
+                        input("Appuyez sur Entrée pour continuer")
                     else:
                         print("Choix invalide.")
                 elif action.startswith("Générer"):
