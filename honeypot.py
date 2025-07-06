@@ -763,7 +763,7 @@ class HoneyShell(ftp.FTPShell):
             log_operation(f"CWD {path} by {self.avatarId}")
             res = super().ftp_CWD(path)
         def _update(r):
-            if isinstance(r, tuple) and r[0] == ftp.REQ_FILE_ACTN_COMPLETED_OK:
+            if isinstance(r, tuple) and r[0] == ftp.REQ_FILE_ACTN_COMPLETED_OK[0]:
                 STATS["cd"] += 1
                 if hasattr(self, "protocol"):
                     self.protocol.s_cd += 1
