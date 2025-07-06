@@ -136,6 +136,12 @@ python attaquant.py --script attack
 python attaquant.py --commands commandes.txt
 ```
 
+Un second outil `attacker_shell.py` offre un shell interactif de type
+`ftp>` avec complétion par <kbd>Tab</kbd>. Il prend en charge les commandes
+`put`, `get`, `rename`, `mkdir` et `rmdir` en plus des commandes `SITE`.
+Télécharger un dossier avec `get` compresse automatiquement le répertoire
+au format ZIP côté serveur.
+
 ### Lancer FileZilla automatiquement
 
 Un script d'assistance `knock_filezilla.py` envoie la séquence de port-knocking

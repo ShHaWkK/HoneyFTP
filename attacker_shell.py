@@ -39,6 +39,8 @@ from ftplib import FTP_TLS, error_perm
 from cmd import Cmd
 from pathlib import Path
 from typing import Optional
+import glob
+import os
 from rich import print as rprint
 from rich.progress import Progress
 
@@ -232,6 +234,49 @@ Liste les fichiers du répertoire courant ou indiqué."""
         except Exception as e:
             print(f"Erreur STOR : {e}")
 
+    def do_mkdir(self, arg):
+        """mkdir <repertoire>"""
+        if not self._ensure_login():
+            return
+        if not arg:
+            print("Usage: mkdir <repertoire>")
+            return
+        try:
+            resp = self.ftp.mkd(arg)
+            print(f"< {resp}")
+        except Exception as e:
+            print(f"Erreur MKD : {e}")
+
+    def do_rmdir(self, arg):
+        """rmdir <repertoire>"""
+        if not self._ensure_login():
+            return
+        if not arg:
+            print("Usage: rmdir <repertoire>")
+            return
+        try:
+            resp = self.ftp.rmd(arg)
+            print(f"< {resp}")
+        except Exception as e:
+            print(f"Erreur RMD : {e}")
+
+    def do_rename(self, arg):
+        """rename <src> <dst> - utilise RNFR/RNTO"""
+        if not self._ensure_login():
+            return
+        parts = arg.split()
+        if len(parts) < 2:
+            print("Usage: rename <src> <dst>")
+            return
+        src, dst = parts[0], parts[1]
+        try:
+            resp1 = self.ftp.sendcmd(f"RNFR {src}")
+            print(f"< {resp1}")
+            resp2 = self.ftp.sendcmd(f"RNTO {dst}")
+            print(f"< {resp2}")
+        except Exception as e:
+            print(f"Erreur RNFR/RNTO : {e}")
+
     def do_cat(self, arg):
         """cat <fichier> - affiche le contenu texte"""
         if not self._ensure_login():
@@ -296,6 +341,19 @@ Envoie une commande brute non gérée autrement."""
             return []
 
     complete_ls = complete_cd = complete_get = complete_cat = complete_grep = _complete_remote
+
+    def complete_mkdir(self, text, line, begidx, endidx):
+        return self._complete_remote(text)
+
+    def complete_rmdir(self, text, line, begidx, endidx):
+        return self._complete_remote(text)
+
+    def complete_rename(self, text, line, begidx, endidx):
+        return self._complete_remote(text)
+
+    def complete_put(self, text, line, begidx, endidx):
+        return [f for f in glob.glob(text+'*') if os.path.isfile(f)]
+
 
     def do_quit(self, arg):
         """Quitte le shell."""
