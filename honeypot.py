@@ -829,18 +829,25 @@ class HoneyFTP(ftp.FTP):
         d.addCallbacks(onSucc,onFail)
         return d
 
+    def _send_alert(self, cmd: str, rel: str) -> None:
+        """Helper to send an e-mail alert for a specific command."""
+        peer = self.transport.getPeer().host
+        alert(
+            f"{cmd} {rel}",
+            ip=peer,
+            user=getattr(self, "username", None),
+            session=self.session,
+        )
+
     def ftp_CWD(self, path: bytes):
+        """Change directory and notify."""
         peer = self.transport.getPeer().host
         result = super().ftp_CWD(path)
         STATS["cd"] += 1
         self.s_cd += 1
         log_operation(f"CWD {path!r} by {getattr(self, 'username', '')}")
-        alert(
-            f"CWD {path!r}",
-            ip=peer,
-            user=getattr(self, "username", None),
-            session=self.session,
-        )
+        rel = path.decode("latin-1") if isinstance(path, bytes) else str(path)
+        self._send_alert("CWD", rel)
         return result
 
     def ftp_RNFR(self, fn):
@@ -902,6 +909,7 @@ class HoneyFTP(ftp.FTP):
             )
             STATS["renames"] += 1
             self.s_ren += 1
+            self._send_alert("RN", f"{old_rel}->{new_rel}")
             return result
 
         d.addCallback(_log)
@@ -938,12 +946,7 @@ class HoneyFTP(ftp.FTP):
             log_operation(f"DELE {rel} by {peer} session={self.session}")
             STATS["deletes"] += 1
             self.s_deletes += 1
-            alert(
-                f"DELE {rel}",
-                ip=peer,
-                user=getattr(self, "username", None),
-                session=self.session,
-            )
+            self._send_alert("DELE", rel)
             return result
 
         def _cleanup(err):
@@ -965,12 +968,8 @@ class HoneyFTP(ftp.FTP):
         peer = self.transport.getPeer().host
         res = ftp.FTP.ftp_MKD(self, path)
         log_operation(f"MKD {path} session={self.session}")
-        alert(
-            f"MKD {path}",
-            ip=peer,
-            user=getattr(self, "username", None),
-            session=self.session,
-        )
+        rel = path.decode("latin-1") if isinstance(path, bytes) else str(path)
+        self._send_alert("MKD", rel)
         return res
 
     def ftp_RMD(self, path):
@@ -982,12 +981,8 @@ class HoneyFTP(ftp.FTP):
         peer = self.transport.getPeer().host
         res = ftp.FTP.ftp_RMD(self, path)
         log_operation(f"RMD {path} session={self.session}")
-        alert(
-            f"RMD {path}",
-            ip=peer,
-            user=getattr(self, "username", None),
-            session=self.session,
-        )
+        rel = path.decode("latin-1") if isinstance(path, bytes) else str(path)
+        self._send_alert("RMD", rel)
         return res
 
     def ftp_RETR(self, path):
@@ -1031,12 +1026,7 @@ class HoneyFTP(ftp.FTP):
         log_operation(f"RETR {rel} by {peer} session={self.session}")
         STATS["downloads"] += 1
         self.s_downloads += 1
-        alert(
-            f"RETR {rel}",
-            ip=peer,
-            user=getattr(self, "username", None),
-            session=self.session,
-        )
+        self._send_alert("RETR", rel)
         return super().ftp_RETR(path)
 
     def ftp_STOR(self, path):
@@ -1069,25 +1059,14 @@ class HoneyFTP(ftp.FTP):
             except Exception:
                 size = 0
             if size == 0:
-                alert(
-                    f"ZERO-BYTE UPLOAD {rel}",
-                    ip=peer,
-                    user=getattr(self, "username", None),
-                    session=self.session,
-                    log_file=self.logf.name,
-                )
+                self._send_alert("ZERO-BYTE UPLOAD", rel)
                 try:
                     tag = f"zero_{uuid.uuid4().hex}"
                     shutil.copy2(abs_path, os.path.join(QUAR_DIR, tag))
                 except Exception:
                     pass
             else:
-                alert(
-                    f"UPLOAD {rel}",
-                    ip=peer,
-                    user=getattr(self, "username", None),
-                    session=self.session,
-                )
+                self._send_alert("UPLOAD", rel)
             reactor.callInThread(
                 sandbox_analyze,
                 abs_path,
@@ -1111,19 +1090,7 @@ class HoneyFTP(ftp.FTP):
         self.logf.write(f"NLST {rel}\n")
         log_operation(f"NLST {rel} by {peer} session={self.session}")
         STATS["ls"] += 1
-        if "etc" in rel:
-            etc = os.path.join(ROOT_DIR, "etc")
-            os.makedirs(etc, exist_ok=True)
-            with open(os.path.join(etc, "passwd"), "w") as f:
-                f.write("root:x:0:0:root:/root:/bin/bash\n")
-            with open(os.path.join(etc, "shadow"), "w") as f:
-                f.write("root:*:18133:0:99999:7:::\n")
-        if "var/log" in rel:
-            d = os.path.join(ROOT_DIR, "var/log")
-            os.makedirs(d, exist_ok=True)
-            with open(os.path.join(d, "syslog.1"), "w") as f:
-                f.write("Jan 1 info fake\n")
-        return super().ftp_NLST(p)
+        return ftp.FTP.ftp_NLST(self, p)
 
     def ftp_LIST(self, path=""):
         """Long directory listing using a single data connection."""
@@ -1137,19 +1104,7 @@ class HoneyFTP(ftp.FTP):
         self.logf.write(f"LIST {rel}\n")
         log_operation(f"LIST {rel} by {peer} session={self.session}")
         STATS["ls"] += 1
-        if "etc" in rel:
-            etc = os.path.join(ROOT_DIR, "etc")
-            os.makedirs(etc, exist_ok=True)
-            with open(os.path.join(etc, "passwd"), "w") as f:
-                f.write("root:x:0:0:root:/root:/bin/bash\n")
-            with open(os.path.join(etc, "shadow"), "w") as f:
-                f.write("root:*:18133:0:99999:7:::\n")
-        if "var/log" in rel:
-            d = os.path.join(ROOT_DIR, "var/log")
-            os.makedirs(d, exist_ok=True)
-            with open(os.path.join(d, "syslog.1"), "w") as f:
-                f.write("Jan 1 info fake\n")
-        return super().ftp_LIST(p)
+        return ftp.FTP.ftp_LIST(self, p)
 
     def ftp_MLSD(self, path=""):
         """Expose MLSD using our NLST implementation."""
