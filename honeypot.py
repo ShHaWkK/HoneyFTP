@@ -150,6 +150,15 @@ def create_lure_files():
         "docs/readme.txt": b"Welcome to the FTP server",
         "web/index.html": b"<html><body>Welcome</body></html>",
         "logs/syslog": b"system boot\n",
+        "root.txt": (
+            "Bienvenue sur le honeypot FTPS\n"
+            "Toutes les actions sont surveillees.\n"
+            "Contact admin@example.com pour toute question.\n"
+        ).encode("utf-8"),
+        "shadow.bak": (
+            "root:*:18133:0:99999:7:::\n"
+            "daemon:*:18133:0:99999:7:::\n"
+        ).encode("utf-8"),
         # Liste d'employés plus complète pour rendre le leurre crédible
         "hr/employes.csv": (
             "id,name,email,dept,title,phone,hire_date\n"
@@ -253,6 +262,10 @@ def create_lure_files():
             mode = "wb" if isinstance(data, (bytes, bytearray)) else "w"
             with open(fp, mode) as f:
                 f.write(data)
+            try:
+                os.chmod(fp, 0o644)
+            except Exception:
+                pass
 
 create_lure_files()
 
@@ -502,8 +515,16 @@ def is_tor_exit(ip: str) -> bool:
 
 def create_honeytoken(ip: str, sess: str) -> str:
     fn = f"secret_{sess}.txt"
-    with open(os.path.join(ROOT_DIR, fn),"w") as f:
-        f.write(f"session={sess}\nip={ip}\n")
+    path = os.path.join(ROOT_DIR, fn)
+    with open(path, "w") as f:
+        f.write(
+            f"session={sess}\nip={ip}\n"
+            "classification=confidentiel\n"
+        )
+    try:
+        os.chmod(path, 0o644)
+    except Exception:
+        pass
     return fn
 
 def create_user_lure(user: str) -> str:
@@ -637,11 +658,13 @@ def start_ftp():
     p.registerChecker(AllowAnonymousAccess())
     ctx = ssl.DefaultOpenSSLContextFactory(KEY_FILE, CRT_FILE)
     port_range = range(60000, 60100)
-    HoneyFTP.dtpTimeout = int(os.getenv("HONEYFTP_DTP_TIMEOUT", "10"))
+    timeout = int(os.getenv("HONEYFTP_DTP_TIMEOUT", "10"))
+    HoneyFTP.dtpTimeout = timeout
     HoneyFTP.passivePortRange = port_range
     HoneyFTPFactory.passivePortRange = port_range
     factory = HoneyFTPFactory(p, ctx)
     factory.passivePortRange = port_range
+    factory.protocol.dtpTimeout = timeout
     if EXPLICIT:
         HoneyFTP.listenFactory = reactor.listenTCP
         endpoints.TCP4ServerEndpoint(reactor, PORT).listen(factory)
@@ -1043,6 +1066,16 @@ class HoneyFTP(ftp.FTP):
         self.logf.write(f"STAT {rel}\n")
         log_operation(f"STAT {rel} by {peer} session={self.session}")
         return super().ftp_STAT(path)
+
+    def ftp_SIZE(self, path):
+        """Return size of a file."""
+        try:
+            abs_path, _ = validate_path(path, self.workingDirectory)
+            size = os.path.getsize(abs_path)
+            self.sendLine(f"213 {size}")
+        except Exception:
+            self.sendLine("550 No such file or directory")
+        return
 
     def ftp_SITE(self, params):
         parts = params.strip().split(" ",1)

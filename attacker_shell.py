@@ -181,6 +181,32 @@ Liste les fichiers du répertoire courant ou indiqué."""
         except Exception as e:
             print(f"Erreur CWD : {e}")
 
+    def do_mkdir(self, arg):
+        """mkdir <répertoire>"""
+        if not self._ensure_login():
+            return
+        if not arg:
+            print("Usage: mkdir <répertoire>")
+            return
+        try:
+            resp = self.ftp.mkd(arg)
+            print(f"< {resp}")
+        except Exception as e:
+            print(f"Erreur MKD : {e}")
+
+    def do_rmdir(self, arg):
+        """rmdir <répertoire>"""
+        if not self._ensure_login():
+            return
+        if not arg:
+            print("Usage: rmdir <répertoire>")
+            return
+        try:
+            resp = self.ftp.rmd(arg)
+            print(f"< {resp}")
+        except Exception as e:
+            print(f"Erreur RMD : {e}")
+
     def do_pwd(self, arg):
         """Affiche le répertoire courant."""
         if not self._ensure_login():
@@ -295,7 +321,19 @@ Envoie une commande brute non gérée autrement."""
         except Exception:
             return []
 
-    complete_ls = complete_cd = complete_get = complete_cat = complete_grep = _complete_remote
+    complete_ls = (
+        complete_cd
+    ) = (
+        complete_get
+    ) = (
+        complete_cat
+    ) = (
+        complete_grep
+    ) = (
+        complete_mkdir
+    ) = (
+        complete_rmdir
+    ) = _complete_remote
 
     def do_quit(self, arg):
         """Quitte le shell."""
