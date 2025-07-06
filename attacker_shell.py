@@ -160,39 +160,57 @@ Authentifie l'utilisateur (anonymous par défaut)."""
             return False
         return True
 
+    def _run(self, func, *args, label: str = ""):
+        """Execute an FTP command while handling errors uniformly."""
+        try:
+            return func(*args)
+        except Exception as e:
+            print(f"Erreur {label or func.__name__.upper()} : {e}")
+            return None
+
+    def _is_dir(self, name: str) -> bool:
+        """Best-effort check whether a remote path is a directory."""
+        cur = self.ftp.pwd()
+        try:
+            self.ftp.cwd(name)
+            self.ftp.cwd(cur)
+            return True
+        except Exception:
+            try:
+                self.ftp.cwd(cur)
+            except Exception:
+                pass
+            return False
+
+
     def do_ls(self, arg):
         """ls [dossier]
 Liste les fichiers du répertoire courant ou indiqué."""
         if not self._ensure_login():
             return
-        # When no argument is supplied, send an empty string so the server
-        # lists the root directory rather than ``."``.
         path = arg or ""
-        try:
-            lines = []
-            resp = self.ftp.retrlines(f"LIST {path}", lines.append)
-            for line in lines:
-                print(line)
-            print(f"< {resp}")
-        except Exception as e:
-            print(f"Erreur LIST : {e}")
+        names = self._run(self.ftp.nlst, path, label="NLST")
+        if names is None:
+            return
+        for name in names:
+            icon = "↗️" if self._is_dir(name) else "📄"
+            print(f"{icon} {name}")
 
     def do_cd(self, arg):
         """cd <répertoire>"""
         if not self._ensure_login():
             return
-        path = arg or ""
-        try:
-            # ``ftplib`` replaces an empty string with ``'.'`` when using
-            # ``cwd()``. Use ``sendcmd`` directly so the server receives an
-            # truly empty argument when requested.
-            if path == "":
-                resp = self.ftp.sendcmd("CWD")
-            else:
-                resp = self.ftp.cwd(path)
-            print(f"< {resp}")
-        except Exception as e:
-            print(f"Erreur CWD : {e}")
+        path = arg.strip()
+        if path in ("", "/"):
+            dest = "/"
+        else:
+            dest = path
+        resp = self._run(self.ftp.cwd, dest, label="CWD")
+        if resp is not None:
+            print(f"< {str(resp).strip()}")
+            pwd = self._run(self.ftp.pwd, label="PWD")
+            if pwd is not None:
+                print(pwd)
 
     def do_mkdir(self, arg):
         """mkdir <répertoire>"""
@@ -376,10 +394,8 @@ Envoie une commande brute non gérée autrement."""
     def _complete_remote(self, text):
         if not self.ftp or not self.logged:
             return []
-        try:
-            return [n for n in self.ftp.nlst() if n.startswith(text)]
-        except Exception:
-            return []
+        names = self._run(self.ftp.nlst, label="NLST") or []
+        return [n for n in names if n.startswith(text)]
 
     complete_ls = (
         complete_cd
@@ -484,13 +500,13 @@ def _selftest() -> None:
     shell.ftp = mock
     shell.logged = True
 
-    mock.retrlines.return_value = "226 OK"
+    mock.nlst.return_value = []
     shell.do_ls("")
-    assert mock.retrlines.call_args[0][0] == "LIST "
+    assert mock.nlst.call_args[0][0] == ""
 
-    mock.sendcmd.return_value = "250 OK"
+    mock.cwd.return_value = "250 OK"
     shell.do_cd("")
-    assert mock.sendcmd.call_args[0][0] == "CWD"
+    assert mock.cwd.call_args[0][0] == "/"
 
     mock.rename.return_value = "250 OK"
     shell.do_mv("a b")
