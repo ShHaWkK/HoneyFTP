@@ -754,17 +754,6 @@ class HoneyShell(ftp.FTPShell):
         else:
             return defer.succeed(ftp._FileReader(f))
 
-    def ftp_CWD(self, path):
-        if path.startswith(".."):
-            self.logf.write(f"CWD {path}\n")
-            log_operation(f"CWD {path} by {self.avatarId}")
-            STATS["cd"] += 1
-            self.protocol.s_cd += 1 if hasattr(self, 'protocol') else 0
-            return ftp.REQ_FILE_ACTN_COMPLETED_OK,
-        log_operation(f"CWD {path} by {self.avatarId}")
-        STATS["cd"] += 1
-        self.protocol.s_cd += 1 if hasattr(self, 'protocol') else 0
-        return super().ftp_CWD(path)
 
 # 8) Protocol
 class HoneyFTP(ftp.FTP):
@@ -780,6 +769,7 @@ class HoneyFTP(ftp.FTP):
         self.s_bytes = 0
         self.s_cd = 0
         self.s_ren = 0
+        self.s_deletes = 0
         logging.info("CONNECT %s session=%s", peer, self.session)
         if is_tor_exit(peer):
             alert(
@@ -851,6 +841,20 @@ class HoneyFTP(ftp.FTP):
         d.addCallbacks(onSucc,onFail)
         return d
 
+    def ftp_CWD(self, path):
+        res = super().ftp_CWD(path)
+        def _update(r):
+            if isinstance(r, tuple) and r[0] == ftp.REQ_FILE_ACTN_COMPLETED_OK:
+                STATS["cd"] += 1
+                self.s_cd += 1
+                log_operation(
+                    f"CWD {path!r} by {getattr(self, 'username', '')} session={self.session}"
+                )
+            return r
+        if isinstance(res, defer.Deferred):
+            return res.addCallback(_update)
+        return _update(res)
+
     def ftp_RNFR(self, fn):
         peer = self.transport.getPeer().host
         try:
@@ -910,6 +914,7 @@ class HoneyFTP(ftp.FTP):
             self.logf.write(f"DELE {rel}→quarantine/{tag}\n")
             log_operation(f"DELE {rel} by {peer} session={self.session}")
             STATS["deletes"] += 1
+            self.s_deletes += 1
             self.sendLine("250 Deleted")
             return
         except Exception as e:
@@ -991,10 +996,10 @@ class HoneyFTP(ftp.FTP):
             return
         self.logf.write(f"STOR {rel}\n")
         log_operation(f"STOR {rel} by {peer} session={self.session}")
-        STATS["uploads"] += 1
-        self.s_uploads += 1
         d = super().ftp_STOR(path)
         def _update(res):
+            STATS["uploads"] += 1
+            self.s_uploads += 1
             try:
                 self.s_bytes += os.path.getsize(abs_path)
             except Exception:
@@ -1476,6 +1481,7 @@ def menu_loop():
         elif choice == "5":
             sid = input("ID de session > ").strip()
             show_session(sid)
+            input("Appuyez sur Entrée pour continuer")
         elif choice == "6":
             show_stats()
         elif choice == "7":
@@ -1493,6 +1499,7 @@ def menu_loop():
                 if action.startswith("Analyser"):
                     if sid:
                         show_session(sid)
+                        input("Appuyez sur Entrée pour continuer")
                     else:
                         print("Choix invalide.")
                 elif action.startswith("Générer"):
