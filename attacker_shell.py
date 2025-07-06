@@ -39,6 +39,7 @@ from ftplib import FTP_TLS, error_perm
 from cmd import Cmd
 from pathlib import Path
 import io
+import os
 from typing import Optional
 from rich import print as rprint
 from rich.progress import Progress
@@ -474,5 +475,40 @@ def main():
         app.run(host="0.0.0.0", port=8000)
 
 
+def _selftest() -> None:
+    """Exécute des vérifications rapides sur les commandes principales."""
+    from unittest.mock import MagicMock
+
+    mock = MagicMock()
+    shell = FtpShell("localhost", 21)
+    shell.ftp = mock
+    shell.logged = True
+
+    mock.retrlines.return_value = "226 OK"
+    shell.do_ls("")
+    assert mock.retrlines.call_args[0][0] == "LIST "
+
+    mock.sendcmd.return_value = "250 OK"
+    shell.do_cd("")
+    assert mock.sendcmd.call_args[0][0] == "CWD"
+
+    mock.rename.return_value = "250 OK"
+    shell.do_mv("a b")
+    assert mock.rename.call_args[0] == ("a", "b")
+
+    mock.delete.return_value = "250 OK"
+    shell.do_rm("file")
+    assert mock.delete.call_args[0][0] == "file"
+
+    mock.storbinary.return_value = "226 OK"
+    shell.do_touch("file")
+    assert mock.storbinary.call_args[0][0] == "STOR file"
+
+    print("Self-test OK")
+
+
 if __name__ == "__main__":
-    main()
+    if os.getenv("HONEYFTP_TEST"):
+        _selftest()
+    else:
+        main()
