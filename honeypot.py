@@ -568,6 +568,24 @@ def finalize_session(sess: str, start: datetime, dls=0, ups=0, cds=0, rns=0, siz
     except Exception:
         pass
 
+def clean_quarantine() -> None:
+    """Remove all files from the quarantine directory."""
+    removed = 0
+    for name in os.listdir(QUAR_DIR):
+        path = os.path.join(QUAR_DIR, name)
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            removed += 1
+        except Exception as e:
+            logging.warning("Failed to remove %s: %s", path, e)
+    if removed:
+        log_operation(f"CLEAN_QUARANTINE removed {removed} items")
+    ACTIONS[:] = [a for a in ACTIONS if not a.startswith("Nettoyer")]
+    print(f"{removed} élément(s) supprimé(s) de la quarantine")
+
 # Port-knocking logic
 ftp_started = False
 knock_state = {}
