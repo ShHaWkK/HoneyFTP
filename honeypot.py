@@ -65,7 +65,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from colorama import init as color_init, Fore, Style
-from typing import Optional
+from typing import Optional, List
 
 # 2) Détermine le répertoire de base
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -450,7 +450,7 @@ def alert(
         except Exception:
             pass
 
-def _send_alert(kind: str, paths: list[str], proto=None) -> None:
+def _send_alert(kind: str, paths: List[str], proto=None) -> None:
     """Send a single alert listing multiple directory entries."""
     msg = f"{kind} ({len(paths)})"
     body = "\n".join(paths)
@@ -744,18 +744,6 @@ class HoneyShell(ftp.FTPShell):
 
     def openForReading(self, path):
         rel = "/".join(path)
-        if rel in CANARY:
-            proto = getattr(self, "protocol", None)
-            ip = proto.transport.getPeer().host if proto else None
-            sess = proto.session if proto else None
-            logf = proto.logf.name if proto and hasattr(proto, "logf") else None
-            alert(
-                f"CANARY READ {rel}",
-                ip=ip,
-                user=self.avatarId,
-                session=sess,
-                log_file=logf,
-            )
         abs_path = os.path.join(ROOT_DIR, *path)
         if os.path.isdir(abs_path):
             return defer.fail(ftp.IsADirectoryError(path))
@@ -812,6 +800,10 @@ class HoneyFTP(ftp.FTP):
         )
         super().connectionLost(reason)
 
+    def _send_alert(self, cmd: str, paths: List[str]) -> None:
+        """Wrapper around global _send_alert using this protocol's context."""
+        _send_alert(cmd, paths, self)
+
     def ftp_USER(self, u):
         peer = self.transport.getPeer().host
         self.username = u
@@ -856,10 +848,15 @@ class HoneyFTP(ftp.FTP):
         return d
 
     def ftp_CWD(self, path: bytes):
+        try:
+            _, rel = validate_path(path.decode("latin-1") if isinstance(path, bytes) else path, self.workingDirectory)
+        except Exception:
+            rel = path.decode("latin-1") if isinstance(path, bytes) else str(path)
         result = super().ftp_CWD(path)
         STATS["cd"] += 1
         self.s_cd += 1
-        log_operation(f"CWD {path!r} by {getattr(self, 'username', '')}")
+        log_operation(f"CWD {rel} by {getattr(self, 'username', '')}")
+        self._send_alert("CWD", [rel])
         return result
 
     def ftp_RNFR(self, fn):
@@ -899,6 +896,7 @@ class HoneyFTP(ftp.FTP):
             log_operation(f"RNTO {old_rel}->{new_rel} from {peer} session={self.session}")
             STATS["renames"] += 1
             self.s_ren += 1
+            self._send_alert("RN", [old_rel, new_rel])
             self.sendLine("250 Rename done")
             return
         except Exception as e:
@@ -922,6 +920,7 @@ class HoneyFTP(ftp.FTP):
             log_operation(f"DELE {rel} by {peer} session={self.session}")
             STATS["deletes"] += 1
             self.s_deletes += 1
+            self._send_alert("DELE", [rel])
             self.sendLine("250 Deleted")
             return
         except Exception as e:
@@ -936,6 +935,7 @@ class HoneyFTP(ftp.FTP):
             return
         res = ftp.FTP.ftp_MKD(self, path)
         log_operation(f"MKD {path} session={self.session}")
+        self._send_alert("MKD", [path if isinstance(path, str) else path.decode("latin-1")])
         return res
 
     def ftp_RMD(self, path):
@@ -946,6 +946,7 @@ class HoneyFTP(ftp.FTP):
             return
         res = ftp.FTP.ftp_RMD(self, path)
         log_operation(f"RMD {path} session={self.session}")
+        self._send_alert("RMD", [path if isinstance(path, str) else path.decode("latin-1")])
         return res
 
     def ftp_RETR(self, path):
@@ -989,6 +990,7 @@ class HoneyFTP(ftp.FTP):
         log_operation(f"RETR {rel} by {peer} session={self.session}")
         STATS["downloads"] += 1
         self.s_downloads += 1
+        self._send_alert("RETR", [rel])
         return super().ftp_RETR(path)
 
     def ftp_STOR(self, path):
@@ -1018,6 +1020,7 @@ class HoneyFTP(ftp.FTP):
                 getattr(self, "username", "anonymous"),
                 peer,
             )
+            self._send_alert("STOR", [rel])
             return res
         d.addCallback(_update)
         return d
@@ -1067,7 +1070,7 @@ class HoneyFTP(ftp.FTP):
                 data = b"\r\n".join(lines) + b"\r\n"
                 self.dtpInstance.transport.write(data)
             self.dtpInstance.transport.loseConnection()
-            _send_alert("LS", names, self)
+            self._send_alert("LS", names)
             return (ftp.TXFR_COMPLETE_OK,)
 
         def _err(_):
@@ -1120,7 +1123,7 @@ class HoneyFTP(ftp.FTP):
                 data = b"\r\n".join(lines) + b"\r\n"
                 self.dtpInstance.transport.write(data)
             self.dtpInstance.transport.loseConnection()
-            _send_alert("LS", names, self)
+            self._send_alert("LS", names)
             return (ftp.TXFR_COMPLETE_OK,)
 
         def _err(_):
