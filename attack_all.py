@@ -25,15 +25,14 @@ def knock(host: str) -> None:
 
 def connect_ftps(host: str, port: int) -> FTP_TLS:
     ctx = ssl._create_unverified_context()
-    raw = socket.create_connection((host, port), timeout=10)
-    ss = ctx.wrap_socket(raw, server_hostname=host)
     ftp = FTP_TLS(context=ctx)
-    ftp.sock = ss
-    ftp.file = ss.makefile("r", encoding="utf-8", newline="\r\n")
-    ftp.af = ss.family
-    ftp.host = host
-    ftp.passiveserver = True
-    print("<", ftp.getresp())
+    # The connect() method performs the TLS handshake for implicit FTPS
+    banner = ftp.connect(host, port)
+    print("<", banner)
+    ftp.login("anonymous", "")
+    # Encrypt the data channel and ensure passive mode
+    ftp.prot_p()
+    ftp.set_pasv(True)
     return ftp
 
 
@@ -42,8 +41,6 @@ def main(host: str = "127.0.0.1", port: int = 2121) -> None:
     knock(host)
     time.sleep(1)
     ftp = connect_ftps(host, port)
-    ftp.login("anonymous", "")
-    ftp.prot_p()
     print("Logged in as anonymous")
 
     print("PWD", ftp.pwd())
