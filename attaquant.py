@@ -332,6 +332,52 @@ def script_attack(host, port):
     ftp.quit()
 
 
+def script_demo(host, port):
+    """Connexion anonyme et enchaînement complet de commandes."""
+    if not unlocked:
+        do_knock(host, port)
+    ftp = make_ftps(host, port)
+    if not do_login(ftp, 'anonymous', ''):
+        ftp.quit()
+        return
+    print(Fore.CYAN + 'PWD ' + ftp.pwd())
+    do_nlst(ftp)
+    tmp = os.path.join(os.path.dirname(__file__), 'demo_temp.txt')
+    with open(tmp, 'w') as f:
+        f.write('demo')
+    with open(tmp, 'rb') as f:
+        print(Fore.GREEN + '←', ftp.storbinary('STOR demo.txt', f))
+    do_nlst(ftp)
+    with open('retr_demo.txt', 'wb') as f:
+        print(Fore.GREEN + '←', ftp.retrbinary('RETR demo.txt', f.write))
+    do_cwd_traverse(ftp)
+    try:
+        print(Fore.GREEN + '←', ftp.mkd('demo_dir'))
+        print(Fore.GREEN + '←', ftp.rmd('demo_dir'))
+    except Exception as e:
+        print(Fore.RED + '× MKD/RMD:', e)
+    do_site_version(ftp)
+    do_site_uptime(ftp)
+    do_site_stats(ftp)
+    do_site_help(ftp)
+    do_site_getlog(ftp)
+    try:
+        do_site_exec(ftp)
+    except Exception:
+        pass
+    try:
+        print(Fore.GREEN + '←', ftp.sendcmd('RNFR demo.txt'))
+        print(Fore.GREEN + '←', ftp.sendcmd('RNTO demo2.txt'))
+        print(Fore.GREEN + '←', ftp.delete('demo2.txt'))
+    except Exception as e:
+        print(Fore.RED + '× RNFR/RNTO/DELE:', e)
+    ftp.quit()
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+
+
 def script_replay(host, port, path=None):
     """Rejoue des commandes depuis ``replay.txt`` ou un fichier donné."""
     if not unlocked:
@@ -363,7 +409,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="127.0.0.1", help="Honeypot IP")
     p.add_argument("--port", default=2121, type=int, help="Port FTPS implicite")
-    p.add_argument("--script", choices=["enum", "attack"], help="Exécute un script prédéfini puis quitte")
+    p.add_argument("--script", choices=["enum", "attack", "demo"], help="Exécute un script prédéfini puis quitte")
     p.add_argument("--commands", help="Rejoue les commandes d'un fichier et quitte")
     args = p.parse_args()
 
@@ -372,6 +418,9 @@ def main():
         return
     if args.script == "attack":
         script_attack(args.host, args.port)
+        return
+    if args.script == "demo":
+        script_demo(args.host, args.port)
         return
     if args.commands:
         script_replay(args.host, args.port, args.commands)
@@ -403,6 +452,7 @@ def main():
 18) Quitter
 19) SITE UPTIME
 20) SITE STATS
+21) Demo complet
 """)
         cmd = input("Votre choix > ").strip()
 
@@ -463,6 +513,8 @@ def main():
             do_site_uptime(ftp)
         elif cmd == "20" and ftp:
             do_site_stats(ftp)
+        elif cmd == "21":
+            script_demo(args.host, args.port)
         else:
             print(Fore.RED + "→ Choix invalide ou pas de connexion active.")
 

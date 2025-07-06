@@ -132,6 +132,9 @@ python attaquant.py --script enum
 # Script d'attaque automatisé
 python attaquant.py --script attack
 
+# Démo complète
+python attaquant.py --script demo
+
 # Rejouer des commandes depuis un fichier
 python attaquant.py --commands commandes.txt
 ```
@@ -147,7 +150,7 @@ puis ouvre FileZilla avec les informations d'identification fournies :
 
 Par défaut le port est `2121` et l'utilisateur `anonymous`.
 
-Le menu interactif accepte les valeurs **0 à 20** :
+Le menu interactif accepte les valeurs **0 à 21** :
 
 
 | Choix | Action |
@@ -172,6 +175,7 @@ Le menu interactif accepte les valeurs **0 à 20** :
 |17|Rejouer une liste de commandes|
 |19|`SITE UPTIME` – durée de fonctionnement|
 |20|`SITE STATS` – statistiques globales|
+|21|Demo complet montrant toutes les commandes|
 
 L'option `18` quitte le client.
 

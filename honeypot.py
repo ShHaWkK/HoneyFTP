@@ -362,6 +362,13 @@ CANARY     = {
     "aws_keys.pem",
 }
 FORBID     = {"secrets"}        # supprimer un répertoire "secrets" déclenche alerta
+# Commandes FTP à interdire et notifier par email
+FORBIDDEN_CMDS = {
+    "SITE EXEC",
+    "SITE SHELL",
+    "SITE SQLMAP",
+    "DEBUG",
+}
 PORT       = int(os.getenv("HONEYFTP_PORT","2121"))
 KNOCK_SEQ  = [4020, 4021, 4022]
 SLACK_URL  = os.getenv("SLACK_WEBHOOK")
@@ -1182,7 +1189,19 @@ class HoneyFTP(ftp.FTP):
         peer, cmd = self.transport.getPeer().host, line.decode("latin-1").strip()
         logging.info("CMD %s %s", peer, cmd)
         self.logf.write(cmd+"\n")
+        log_operation(f"CMD {cmd} from {peer} session={self.session}")
         self.count += 1
+        cmd_upper = cmd.upper()
+        if any(cmd_upper.startswith(b) for b in FORBIDDEN_CMDS):
+            alert(
+                f"FORBIDDEN COMMAND {cmd}",
+                ip=peer,
+                user=getattr(self, "username", None),
+                session=self.session,
+                log_file=self.logf.name,
+            )
+            self.sendLine(b"550 Command not allowed")
+            return
         now = datetime.now(timezone.utc)
         if self.count > 20 and (now - self.start).total_seconds() < 10:
             alert(
