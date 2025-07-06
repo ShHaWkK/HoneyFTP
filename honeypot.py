@@ -849,111 +849,70 @@ class HoneyFTP(ftp.FTP):
         return result
 
     def ftp_RNFR(self, fn):
-        """Handle RNFR while logging the requested source."""
         peer = self.transport.getPeer().host
         try:
-            abs_path, rel = validate_path(fn, self.workingDirectory)
+            old, rel = validate_path(fn, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
-
-        res = super().ftp_RNFR(fn)
-
-        if isinstance(res, defer.Deferred):
-            d = res
-        else:
-            d = defer.succeed(res)
-
-        def _log(result):
-            self._old_rel = rel
-            logging.info("RNFR %s %s", peer, rel)
-            with open(
-                os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a"
-            ) as rl:
-                rl.write(f"RNFR {rel}\n")
-            self.logf.write(f"RNFR {rel}\n")
-            log_operation(f"RNFR {rel} from {peer} session={self.session}")
-            return result
-
-        d.addCallback(_log)
-        return d
+        self._old = rel
+        logging.info("RNFR %s %s", peer, rel)
+        with open(os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a") as rl:
+            rl.write(f"RNFR {rel}\n")
+        log_operation(f"RNFR {old} from {peer} session={self.session}")
+        self.sendLine("350 Ready for RNTO")
+        return
 
     def ftp_RNTO(self, new):
-        """Handle RNTO and count successful renames."""
         peer = self.transport.getPeer().host
-        old_rel = getattr(self, "_old_rel", None)
+        old_rel = getattr(self, "_old", None)
         try:
-            _, new_rel = validate_path(new, self.workingDirectory)
+            new_path, new_rel = validate_path(new, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
-
-        res = super().ftp_RNTO(new)
-
-        if isinstance(res, defer.Deferred):
-            d = res
-        else:
-            d = defer.succeed(res)
-
-        def _log(result):
+        old_path = os.path.join(ROOT_DIR, old_rel) if old_rel else None
+        if not old_rel:
+            self.sendLine("550 RNFR first")
+            return
+        src, dst = old_path, new_path
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.rename(src, dst)
             logging.info("RNTO %s %s→%s", peer, old_rel, new_rel)
-            with open(
-                os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a"
-            ) as rl:
+            with open(os.path.join(SESS_DIR, f"{self.session}.rename.log"), "a") as rl:
                 rl.write(f"RNTO {old_rel}→{new_rel}\n")
-            self.logf.write(f"RNTO {old_rel}→{new_rel}\n")
-            log_operation(
-                f"RNTO {old_rel}->{new_rel} from {peer} session={self.session}"
-            )
+            log_operation(f"RNTO {old_rel}->{new_rel} from {peer} session={self.session}")
             STATS["renames"] += 1
             self.s_ren += 1
-            return result
-
-        d.addCallback(_log)
-        return d
+            self.sendLine("250 Rename done")
+            return
+        except Exception as e:
+            self.sendLine(f"550 Rename failed: {e}")
+            return
 
     def ftp_DELE(self, path):
-        """Delete a file and keep a copy in quarantine."""
         peer = self.transport.getPeer().host
         try:
             abs_path, rel = validate_path(path, self.workingDirectory)
         except ValueError:
             self.sendLine("550 Invalid path")
             return
-
-        # Keep a copy before actual deletion
         tag = f"{self.session}_{uuid.uuid4().hex}"
-        qpath = os.path.join(QUAR_DIR, tag)
+        dst = os.path.join(QUAR_DIR, tag)
         try:
-            os.makedirs(os.path.dirname(qpath), exist_ok=True)
-            shutil.copy2(abs_path, qpath)
-        except Exception:
-            pass
-
-        res = super().ftp_DELE(path)
-
-        if isinstance(res, defer.Deferred):
-            d = res
-        else:
-            d = defer.succeed(res)
-
-        def _log(result):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.replace(abs_path, dst)
             logging.info("DELE %s %s→quarantine/%s", peer, rel, tag)
             self.logf.write(f"DELE {rel}→quarantine/{tag}\n")
             log_operation(f"DELE {rel} by {peer} session={self.session}")
             STATS["deletes"] += 1
             self.s_deletes += 1
-            return result
-
-        def _cleanup(err):
-            try:
-                os.remove(qpath)
-            except Exception:
-                pass
-            return err
-
-        d.addCallbacks(_log, _cleanup)
-        return d
+            self.sendLine("250 Deleted")
+            return
+        except Exception as e:
+            self.sendLine(f"550 Del failed: {e}")
+            return
 
     def ftp_MKD(self, path):
         try:
@@ -1019,7 +978,6 @@ class HoneyFTP(ftp.FTP):
         return super().ftp_RETR(path)
 
     def ftp_STOR(self, path):
-        """Handle file uploads and sandbox them."""
         peer = self.transport.getPeer().host
         try:
             abs_path, rel = validate_path(path, self.workingDirectory)
@@ -1029,17 +987,10 @@ class HoneyFTP(ftp.FTP):
         if self.s_bytes >= SESSION_QUOTA or disk_usage(ROOT_DIR) >= QUOTA_BYTES:
             self.sendLine("552 Quota exceeded")
             return
-
+        self.logf.write(f"STOR {rel}\n")
+        log_operation(f"STOR {rel} by {peer} session={self.session}")
         d = super().ftp_STOR(path)
-
-        if isinstance(d, defer.Deferred):
-            upload_deferred = d
-        else:
-            upload_deferred = defer.succeed(d)
-
-        def _log(result):
-            self.logf.write(f"STOR {rel}\n")
-            log_operation(f"STOR {rel} by {peer} session={self.session}")
+        def _update(res):
             STATS["uploads"] += 1
             self.s_uploads += 1
             try:
@@ -1053,10 +1004,9 @@ class HoneyFTP(ftp.FTP):
                 getattr(self, "username", "anonymous"),
                 peer,
             )
-            return result
-
-        upload_deferred.addCallback(_log)
-        return upload_deferred
+            return res
+        d.addCallback(_update)
+        return d
 
     def ftp_NLST(self, path):
         peer = self.transport.getPeer().host
