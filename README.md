@@ -236,4 +236,12 @@ using `openssl` if none is present.
 ```
 
 The container is started read-only and drops all capabilities for simple
-isolation.
+isolation. Additional Docker security options limit memory usage,
+process counts and prevent privilege escalation.
+
+For a fully automated setup that installs Docker and launches the honeypot,
+use the `setup_honeypot.sh` helper:
+
+```bash
+sudo ./setup_honeypot.sh
+```
