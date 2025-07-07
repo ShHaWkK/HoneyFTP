@@ -24,7 +24,8 @@ import os, uuid, zipfile
 import tempfile
 import sys, subprocess, shutil, random, logging, smtplib
 import json, atexit, base64, threading, argparse, re, mimetypes, hashlib
-from twisted.internet import defer
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from twisted.internet import defer, task
 from twisted.python import log as txlog
 from datetime import datetime, timedelta, timezone
 
@@ -128,9 +129,31 @@ sh = logging.StreamHandler()
 sh.setFormatter(color_fmt)
 handlers.append(sh)
 
-logging.basicConfig(level=logging.INFO, handlers=handlers)
-# Forward Twisted logs to the standard logging module
+log_q = None
+listener = None
+
+def setup_logging():
+    """Configure asynchronous logging using a queue."""
+    global log_q, listener
+    from logging.handlers import QueueHandler, QueueListener
+    from queue import Queue
+
+    log_q = Queue(-1)
+    listener = QueueListener(log_q, *handlers, respect_handler_level=True)
+    listener.start()
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(QueueHandler(log_q))
+
+setup_logging()
 txlog.PythonLoggingObserver().start()
+
+def stop_logging():
+    if listener:
+        listener.stop()
+
+atexit.register(stop_logging)
 
 # 4) Leurres initiaux
 def create_lure_files():
@@ -213,6 +236,12 @@ def create_lure_files():
     files["backups/backup.zip"] = buf.getvalue()
     files["backups/logs_2025-07-04.zip"] = buf.getvalue()
 
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("doc1.txt", "secret")
+        z.writestr("doc2.txt", "hidden")
+    files["archives/project.tgz"] = buf.getvalue()
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Financials"
@@ -286,6 +315,39 @@ STATS = {
 # Persist global statistics across restarts
 STATS_FILE = os.path.join(BASE, "stats_global.json")
 
+#  Size limits for automatic purge (env vars in MB)
+MAX_SESS_BYTES = int(os.getenv("HONEYFTP_MAX_SESS_MB", "200")) * 1024 * 1024
+MAX_QUAR_BYTES = int(os.getenv("HONEYFTP_MAX_QUAR_MB", "200")) * 1024 * 1024
+
+def purge_dir(path: str, limit: int) -> None:
+    """Delete oldest files until directory size <= limit."""
+    total = 0
+    items = []
+    for root, _, files in os.walk(path):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                st = os.stat(fp)
+            except OSError:
+                continue
+            total += st.st_size
+            items.append((st.st_mtime, fp, st.st_size))
+    if total <= limit:
+        return
+    items.sort()
+    for _, fp, sz in items:
+        try:
+            os.remove(fp)
+            total -= sz
+            if total <= limit:
+                break
+        except OSError:
+            pass
+
+def purge_storage() -> None:
+    purge_dir(SESS_DIR, MAX_SESS_BYTES)
+    purge_dir(QUAR_DIR, MAX_QUAR_BYTES)
+
 def load_stats() -> None:
     try:
         with open(STATS_FILE) as f:
@@ -302,6 +364,24 @@ def save_stats() -> None:
         pass
 
 load_stats()
+update_bad_ips()
+
+def generate_periodic_report() -> None:
+    """Generate a simple global report and send an alert."""
+    os.makedirs(os.path.join(BASE, "reports"), exist_ok=True)
+    path = os.path.join(BASE, "reports", "global_report.txt")
+    with open(path, "w") as f:
+        f.write(json.dumps(STATS, indent=2))
+    alert("Periodic report", log_file=path)
+
+
+def scheduled_tasks() -> None:
+    purge_storage()
+    generate_periodic_report()
+    update_bad_ips()
+    threading.Timer(3600, scheduled_tasks).start()
+
+scheduled_tasks()
 
 # Register cleanup handlers
 atexit.register(_cleanup_pid)
@@ -309,6 +389,32 @@ atexit.register(save_stats)
 
 # Suggested post-session actions to display in the menu
 ACTIONS = []
+
+
+class ApiHandler(BaseHTTPRequestHandler):
+    def _json(self, data, code=200):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def do_GET(self):
+        if self.path == "/stats":
+            self._json(STATS)
+        elif self.path == "/sessions":
+            sess = [f[:-4] for f in os.listdir(SESS_DIR) if f.endswith('.log')]
+            self._json(sorted(sess))
+        elif self.path == "/uptime":
+            up = (datetime.now(timezone.utc) - SERVER_START).total_seconds()
+            self._json({"uptime": up})
+        else:
+            self._json({"error": "not found"}, 404)
+
+
+def start_api_server() -> None:
+    port = int(os.getenv("HONEYFTP_API_PORT", "8080"))
+    srv = HTTPServer(("0.0.0.0", port), ApiHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 def get_next_session_id() -> str:
     """Return the next incremental session ID (session1, session2, ...)."""
@@ -369,6 +475,11 @@ from twisted.protocols import ftp
 from twisted.python import filepath
 
 TOR_LIST   = "https://check.torproject.org/torbulkexitlist"
+REPUTATION_URLS = [
+    "https://feodotracker.abuse.ch/downloads/ipblocklist.csv",
+    "https://iplists.firehol.org/files/malwaredomainlist_ips.txt",
+]
+BAD_IPS = set()
 BRUTEF_THR = 5
 DELAY_SEC  = 2
 CANARY     = {
@@ -512,6 +623,26 @@ def is_tor_exit(ip: str) -> bool:
         except Exception:
             return False
     return ip in TOR_CACHE["ips"]
+
+
+def update_bad_ips() -> None:
+    """Fetch additional IP reputation lists."""
+    for url in REPUTATION_URLS:
+        try:
+            r = requests.get(url, timeout=5)
+        except Exception:
+            continue
+        for line in r.text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            ip = line.split(",")[0]
+            if re.match(r"\d+\.\d+\.\d+\.\d+", ip):
+                BAD_IPS.add(ip)
+
+
+def is_bad_ip(ip: str) -> bool:
+    return ip in BAD_IPS
 
 def create_honeytoken(ip: str, sess: str) -> str:
     fn = f"secret_{sess}.txt"
@@ -778,6 +909,13 @@ class HoneyFTP(ftp.FTP):
                 session=self.session,
                 log_file=self.logf.name,
             )
+        if is_bad_ip(peer):
+            alert(
+                "Bad reputation IP",
+                ip=peer,
+                session=self.session,
+                log_file=self.logf.name,
+            )
         self.token = create_honeytoken(peer, self.session)
         self._tls = not EXPLICIT
 
@@ -1008,7 +1146,13 @@ class HoneyFTP(ftp.FTP):
         )
         STATS["downloads"] += 1
         self.s_downloads += 1
-        return super().ftp_RETR(path)
+        d = defer.succeed(None)
+        if random.random() < 0.3:
+            d = task.deferLater(reactor, random.uniform(0.1, 0.5), lambda: None)
+        def _go(_):
+            return super(HoneyFTP, self).ftp_RETR(path)
+        d.addCallback(_go)
+        return d
 
     def ftp_STOR(self, path):
         peer = self.transport.getPeer().host
@@ -1030,7 +1174,12 @@ class HoneyFTP(ftp.FTP):
             session=self.session,
             log_file=self.logf.name,
         )
-        d = super().ftp_STOR(path)
+        d = defer.succeed(None)
+        if random.random() < 0.3:
+            d = task.deferLater(reactor, random.uniform(0.1, 0.5), lambda: None)
+        def _do(_):
+            return super(HoneyFTP, self).ftp_STOR(path)
+        d.addCallback(_do)
         def _update(res):
             STATS["uploads"] += 1
             self.s_uploads += 1
@@ -1354,6 +1503,7 @@ def run_server():
                     server_running = False            # on peut retenter plus tard
                     return                            # on sort proprement
 
+        start_api_server()
         logging.info("Waiting knock sequence %s to start FTP", KNOCK_SEQ)
         if not reactor_started:
             reactor_started = True

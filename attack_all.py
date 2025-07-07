@@ -36,19 +36,20 @@ def connect_ftps(host: str, port: int) -> FTP_TLS:
     return ftp
 
 
-def main(host: str = "127.0.0.1", port: int = 2121) -> None:
+def main(host: str = "127.0.0.1", port: int = 2121, delay: float = 0.0) -> None:
     print(f"Knocking {host}…")
     knock(host)
     time.sleep(1)
     ftp = connect_ftps(host, port)
     print("Logged in as anonymous")
+    time.sleep(delay)
 
-    print("PWD", ftp.pwd())
-    print("NLST", ftp.nlst())
+    print("PWD", ftp.pwd()); time.sleep(delay)
+    print("NLST", ftp.nlst()); time.sleep(delay)
 
     print("Creating dir")
     try:
-        print(ftp.mkd("test_dir"))
+        print(ftp.mkd("test_dir")); time.sleep(delay)
     except Exception as e:
         print("MKD fail", e)
 
@@ -57,21 +58,22 @@ def main(host: str = "127.0.0.1", port: int = 2121) -> None:
     tmp.write_text("attack")
     with tmp.open("rb") as f:
         ftp.storbinary("STOR attack.txt", f)
+    time.sleep(delay)
 
-    print("Listing after upload", ftp.nlst())
-    print("SIZE attack.txt", ftp.size("attack.txt"))
-    print("STAT .", ftp.sendcmd("STAT ."))
+    print("Listing after upload", ftp.nlst()); time.sleep(delay)
+    print("SIZE attack.txt", ftp.size("attack.txt")); time.sleep(delay)
+    print("STAT .", ftp.sendcmd("STAT .")); time.sleep(delay)
 
     print("Renaming and deleting")
     try:
-        ftp.rename("attack.txt", "attack2.txt")
-        ftp.delete("attack2.txt")
+        ftp.rename("attack.txt", "attack2.txt"); time.sleep(delay)
+        ftp.delete("attack2.txt"); time.sleep(delay)
     except Exception as e:
         print("Rename/delete fail", e)
 
     print("Downloading root.txt")
-    buf = bytearray()
-    ftp.retrbinary("RETR root.txt", buf.extend)
+    buf = bytearray();
+    ftp.retrbinary("RETR root.txt", buf.extend); time.sleep(delay)
     text = buf.decode("utf-8", errors="ignore")
     print("CAT root.txt:\n", text)
     if "Bienvenue" in text:
@@ -79,7 +81,7 @@ def main(host: str = "127.0.0.1", port: int = 2121) -> None:
 
     print("Removing dir")
     try:
-        print(ftp.rmd("test_dir"))
+        print(ftp.rmd("test_dir")); time.sleep(delay)
     except Exception as e:
         print("RMD fail", e)
 
@@ -99,5 +101,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("host", nargs="?", default="127.0.0.1")
     ap.add_argument("port", nargs="?", type=int, default=2121)
+    ap.add_argument("--delay", type=float, default=0.0, help="pause between operations")
     args = ap.parse_args()
-    main(args.host, args.port)
+    main(args.host, args.port, args.delay)
