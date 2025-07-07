@@ -10,6 +10,13 @@ fi
 
 docker build -t honeyftp .
 
+docker rm -f honeyftp >/dev/null 2>&1 || true
+
 docker run -d --rm --name honeyftp \
-  --read-only --cap-drop ALL \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --pids-limit 128 \
+  --memory 256m \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
   -p 2121:2121 honeyftp
