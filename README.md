@@ -31,6 +31,10 @@ session.
 - Support complet des commandes FTP/FTPS (LIST, NLST, CWD, MKD/RMD, RETR/STOR, RNFR/RNTO, STAT, MODE, FEAT, PBSZ/PROT…)
 - Modes passif et actif, FTPS implicite ou FTPES explicite (`AUTH TLS`)
 - Tarpit progressif en cas de brute-force ou de scans rapides
+- Journalisation asynchrone pour de meilleures performances
+- Purge automatique des sessions et de la quarantaine
+- API HTTP minimale pour consulter les statistiques
+- Rapport périodique envoyé par mail ou Slack
 
 Ces améliorations rendent le honeypot plus crédible et utile. Les bannières
 imitent des serveurs FTP connus pour tromper les attaquants. Le support des
