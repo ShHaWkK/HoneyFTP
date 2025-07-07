@@ -364,7 +364,6 @@ def save_stats() -> None:
         pass
 
 load_stats()
-update_bad_ips()
 
 def generate_periodic_report() -> None:
     """Generate a simple global report and send an alert."""
@@ -381,7 +380,6 @@ def scheduled_tasks() -> None:
     update_bad_ips()
     threading.Timer(3600, scheduled_tasks).start()
 
-scheduled_tasks()
 
 # Register cleanup handlers
 atexit.register(_cleanup_pid)
@@ -1704,6 +1702,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--server", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    update_bad_ips()
+    scheduled_tasks()
     if args.server:
         run_server()
     else:
